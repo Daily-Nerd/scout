@@ -12,3 +12,27 @@ Run for real:
 
     cp .env.example .env   # fill in SCOUT_GITHUB_TOKEN
     uv run scout run --apply
+
+## Running on a schedule
+
+### GitHub Action
+
+The workflow in `.github/workflows/scout.yml` runs `scout run` every 6 hours
+and on demand. Scheduled runs are dry runs: they scan, check and print the
+summary, but nothing is written to GitHub. To file the candidate issues for
+real, open the Actions tab, pick the scout workflow, choose "Run workflow"
+and set the `apply` input to true. Only that explicit human dispatch with
+`apply: true` writes; the cron schedule never does. The workflow reads
+`SCOUT_GITHUB_TOKEN` from the repository secrets.
+
+### Locally with cron or launchd
+
+Copy `.env.example` to `.env`, fill in `SCOUT_GITHUB_TOKEN`, then add a
+crontab line like this one, which runs scout every 6 hours and appends the
+summary to a local log:
+
+    0 */6 * * * cd /path/to/scout && /path/to/uv run scout run >> state/cron.log 2>&1
+
+On macOS you can also use a launchd plist with the same command on a 6 hour
+interval. Either way, keep `--apply` off the command line until you want the
+issues to be created, and remember the run log lands in `state/run.log`.

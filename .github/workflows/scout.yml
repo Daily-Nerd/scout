@@ -1,0 +1,30 @@
+name: scout
+
+on:
+  schedule:
+    # every 6 hours, a few minutes past the hour
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "File issues for real. Default is a dry run."
+        type: boolean
+        default: false
+
+jobs:
+  scout:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Run scout
+        env:
+          SCOUT_GITHUB_TOKEN: ${{ secrets.SCOUT_GITHUB_TOKEN }}
+        run: |
+          if [ "${{ inputs.apply }}" = "true" ]; then
+            uv run scout run --apply
+          else
+            uv run scout run
+          fi
