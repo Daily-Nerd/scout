@@ -135,7 +135,7 @@ def test_render_body_reddit_source():
     assert "https://www.reddit.com/r/AIMemory/comments/abc111/memorymesh/" in body
     assert "Matched terms: agent, memory" in body
     assert "a person decides whether it enters the Agent Memory Atlas" in body
-    assert "—" not in body
+    assert "\u2014" not in body
 
 
 def test_render_body_github_source():
