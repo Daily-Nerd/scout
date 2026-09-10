@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>AIMemory: new</title>
+  <entry>
+    <author><name>/u/alice_dev</name></author>
+    <content type="html">&lt;p&gt;I built MemoryMesh, long-term memory recall for AI agents. Feedback welcome.&lt;/p&gt;&lt;p&gt;&lt;a href="https://github.com/alice/memorymesh"&gt;github.com/alice/memorymesh&lt;/a&gt;&lt;/p&gt;</content>
+    <id>t3_abc111</id>
+    <link rel="alternate" href="https://www.reddit.com/r/AIMemory/comments/abc111/memorymesh/"/>
+    <title>MemoryMesh: long-term memory for AI agents</title>
+    <updated>2026-09-08T12:00:00+00:00</updated>
+  </entry>
+  <entry>
+    <author><name>/u/curious_cat</name></author>
+    <content type="html">&lt;p&gt;What checkpoint format do people use for agent state? No repo, just a question.&lt;/p&gt;</content>
+    <id>t3_abc222</id>
+    <link rel="alternate" href="https://www.reddit.com/r/AIMemory/comments/abc222/checkpoint-question/"/>
+    <title>Question about agent checkpoints</title>
+    <updated>2026-09-08T13:00:00+00:00</updated>
+  </entry>
+  <entry>
+    <author><name>/u/bob_builder</name></author>
+    <content type="html">&lt;p&gt;Repo: https://github.com/bob/context-store, an MCP server for persistent memory.&lt;/p&gt;</content>
+    <id>t3_abc333</id>
+    <link rel="alternate" href="https://www.reddit.com/r/AIMemory/comments/abc333/contextstore/"/>
+    <title>context-store: MCP memory server, github.com/bob/context-store.</title>
+    <updated>2026-09-08T14:00:00+00:00</updated>
+  </entry>
+</feed>

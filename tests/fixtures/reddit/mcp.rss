@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>mcp: new</title>
+    <item>
+      <title>RecallSled, an MCP server with long-term agent memory</title>
+      <link>https://www.reddit.com/r/mcp/comments/def444/recallsled/</link>
+      <description>&lt;p&gt;Announcing https://github.com/carol/recall-sled, an MCP server that gives agents long-term memory.&lt;/p&gt;</description>
+      <dc:creator>/u/carol_c</dc:creator>
+      <pubDate>Thu, 09 Sep 2026 09:30:00 +0000</pubDate>
+    </item>
+  </channel>
+</rss>
