@@ -1,0 +1,38 @@
+# scout configuration. Everything the pipeline needs lives here, not in code.
+
+[github]
+# Queries run against the GitHub search API, filtered to recent repos.
+queries = [
+    "topic:agent-memory",
+    "topic:ai-memory",
+    "topic:memory-mcp",
+    "agent memory in:name,description",
+]
+window_days = 14
+
+[reddit]
+# Anonymous public RSS only: one request per subreddit per run, at most
+# one request every request_interval_seconds, no login, no cookies.
+subreddits = ["AIMemory", "mcp", "AI_Agents", "agentsofai", "ai-agents", "LocalLLaMA"]
+request_interval_seconds = 2
+contact_url = "https://github.com/Daily-Nerd/scout"
+
+[terms]
+# A Reddit candidate must match at least one term from each list,
+# case-insensitive.
+agentish = ["agent", "agents", "assistant", "autonomous", "mcp", "tool use"]
+memoryish = ["memory", "memories", "recall", "remembrance", "context", "checkpoint", "long-term", "knowledge base"]
+
+[atlas]
+repo = "neoneye/agent-memory-atlas"
+branch = "main"
+archive_org = "agent-memory-atlas-archive"
+
+[issues]
+# Where candidate issues are filed. Defaults to this repo until the atlas
+# org adopts scout.
+target_repo = "Daily-Nerd/scout"
+label = "scout:candidate"
+
+[state]
+db_path = "state/scout.db"
