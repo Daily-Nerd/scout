@@ -14,7 +14,9 @@ window_days = 14
 # Anonymous public RSS only: one request per subreddit per run, at most
 # one request every request_interval_seconds, no login, no cookies.
 subreddits = ["AIMemory", "mcp", "AI_Agents", "agentsofai", "ai-agents", "LocalLLaMA"]
-request_interval_seconds = 2
+# Measured 2026-09-10: a 2s interval got a 429 on the second subreddit.
+# 5s keeps a full run under a minute and stays well inside the limit.
+request_interval_seconds = 5
 contact_url = "https://github.com/Daily-Nerd/scout"
 
 [terms]
