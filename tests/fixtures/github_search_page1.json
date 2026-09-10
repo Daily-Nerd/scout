@@ -1,0 +1,39 @@
+{
+  "total_count": 3,
+  "incomplete_results": false,
+  "items": [
+    {
+      "full_name": "Daily-Nerd/RecallMirror",
+      "html_url": "https://github.com/Daily-Nerd/RecallMirror",
+      "description": "Long-term memory recall for coding agents",
+      "stargazers_count": 128,
+      "pushed_at": "2026-09-08T10:24:00Z",
+      "created_at": "2026-09-01T09:00:00Z",
+      "fork": false,
+      "archived": false,
+      "license": {"spdx_id": "MIT", "name": "MIT License"}
+    },
+    {
+      "full_name": "SomeOrg/ContextKeeper",
+      "html_url": "https://github.com/SomeOrg/ContextKeeper",
+      "description": null,
+      "stargazers_count": 12,
+      "pushed_at": "2026-09-05T18:02:11Z",
+      "created_at": "2026-09-03T12:00:00Z",
+      "fork": false,
+      "archived": false,
+      "license": null
+    },
+    {
+      "full_name": "Forked/OldMemory",
+      "html_url": "https://github.com/Forked/OldMemory",
+      "description": "a fork that must be excluded",
+      "stargazers_count": 3,
+      "pushed_at": "2026-09-02T08:00:00Z",
+      "created_at": "2026-08-30T08:00:00Z",
+      "fork": true,
+      "archived": false,
+      "license": {"spdx_id": "Apache-2.0", "name": "Apache License 2.0"}
+    }
+  ]
+}
