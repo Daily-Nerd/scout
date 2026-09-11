@@ -22,10 +22,12 @@ and on demand. Scheduled runs are dry runs: they scan, check and print the
 summary, but nothing is written to GitHub. To file the candidate issues for
 real, open the Actions tab, pick the scout workflow, choose "Run workflow"
 and set the `apply` input to true. Only that explicit human dispatch with
-`apply: true` writes; the cron schedule never does. The workflow uses the
-built-in `GITHUB_TOKEN`, which is enough because search needs no special
-scope and the issues are filed in this same repository. Only local runs need
-a personal token in `.env`.
+`apply: true` writes; the cron schedule never does. The workflow prefers an
+`atlas-scout` GitHub App installation token when the `SCOUT_APP_ID` variable
+and `SCOUT_APP_PRIVATE_KEY` secret are set, and falls back to the built-in
+`GITHUB_TOKEN` until then. Either way, search needs no special scope and the
+issues are filed in this same repository. Only local runs need a personal
+token in `.env`.
 
 ### Locally with cron or launchd
 

@@ -18,16 +18,28 @@ permissions:
 jobs:
   scout:
     runs-on: ubuntu-latest
+    env:
+      # True once the atlas-scout app secrets are set on the repository.
+      HAS_APP_KEY: ${{ secrets.SCOUT_APP_PRIVATE_KEY != '' }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: astral-sh/setup-uv@v5
 
+      - name: Mint atlas-scout token
+        if: env.HAS_APP_KEY == 'true'
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.SCOUT_APP_ID }}
+          private-key: ${{ secrets.SCOUT_APP_PRIVATE_KEY }}
+
       - name: Run scout
-        # The built-in token is enough: search needs no special scope and the
-        # issues are filed in this same repository. No secret to maintain.
+        # Prefer the atlas-scout installation token once configured. Until
+        # then the built-in token is enough: search needs no special scope
+        # and the issues are filed in this same repository.
         env:
-          SCOUT_GITHUB_TOKEN: ${{ github.token }}
+          SCOUT_GITHUB_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
         run: |
           if [ "${{ inputs.apply }}" = "true" ]; then
             uv run scout run --apply
