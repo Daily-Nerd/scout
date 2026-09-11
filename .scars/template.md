@@ -1,0 +1,30 @@
+---
+# COPY THIS FILE — do not edit the template itself.
+# New scars: write to .scars/candidates/<slug>.md with status: candidate.
+# A human reviewer promotes via `scar promote` (assigns id + renames).
+id: 0                      # assigned at promotion
+type: deadend              # deadend = tried+failed | fence = looks wrong, intentional | landmine = touching A breaks B
+title: One line, searchable, says the constraint
+severity: medium           # low | medium | high | critical
+confidence: 0.7            # 0..1 — how sure are we this still holds
+created: 1970-01-01
+authors: ["claude-code"]   # who DRAFTED it; the promoting human goes in promoted_by, written by promote
+anchors:
+  - path: src/module/      # file or directory this protects
+  - pattern: "regex"       # optional: fires when matching code appears in ANY new/edited file
+violation: "regex"         # optional: post-edit tripwire — added code matching this on anchored files = the scar was violated
+revives_if: "regex"        # optional: for an ARCHIVED scar — what would make the hazard relevant again (reported, never auto-rearmed)
+evidence:
+  - pr: 123                # at least one receipt: pr, issue, url, commit, incident, or note
+  # Prefer pr/issue/url over a bare commit: SHA — feature-branch SHAs orphan on squash-merge.
+  - issue: 50
+  - url: https://github.com/org/repo/commit/abc1234
+expires:
+  condition: "what change would make this scar obsolete"
+  review_after: 1971-01-01
+status: template           # candidate | active | challenged | archived  (template = never parsed)
+---
+
+Body: 5-15 lines of prose. What was tried/observed, why it failed or why the
+weirdness is intentional, and what a future editor must do instead. Write it
+for someone (human or agent) with zero context. Cite the evidence inline.
