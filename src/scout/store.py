@@ -186,3 +186,14 @@ class Store:
         if self.history is None:
             return {}
         return self.history.repair_rows(retracted_through)
+
+    # metadata refresh -----------------------------------------------------
+
+    def rows_due_for_refresh(self, now: datetime, days: int, limit: int) -> list[str]:
+        if self.history is None:
+            return []
+        return self.history.rows_due_for_refresh(now, days, limit)
+
+    def update_latest(self, repo: str, **payload: object) -> None:
+        if self.history is not None:
+            self.history.update_latest(repo, **payload)

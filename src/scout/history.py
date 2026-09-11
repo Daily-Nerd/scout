@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, fields
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -13,9 +13,21 @@ from .models import Candidate
 if TYPE_CHECKING:
     from .tiering import TierScore
 
+_REFRESH_DISCOVERY = ("seen", "filed", "title_only")
+
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _parse_iso(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
 
 
 class History:
@@ -206,6 +218,51 @@ class History:
             latest["tree_tests"] = has_tests
             latest["tree_source_files"] = source_files
             latest["tree_fetched_at"] = fetched_at
+
+    def rows_due_for_refresh(self, now: datetime, days: int, limit: int) -> list[str]:
+        """Repo rows overdue for a metadata refresh, oldest first.
+
+        A row is due when its discovery is seen, filed or title_only, its
+        assessment is not atlas-known, and its scored_at is absent or
+        older than `days`. An unparseable scored_at counts as due, same
+        as an absent one. Results are ordered by scored_at then
+        last_seen_at, both ascending (a missing value sorts first), and
+        capped at `limit`.
+        """
+        cutoff = now - timedelta(days=days)
+        due: list[str] = []
+        for repo, row in self.repos.items():
+            if row.get("kind") != "repo":
+                continue
+            if row.get("discovery") not in _REFRESH_DISCOVERY:
+                continue
+            if row.get("assessment") == "atlas-known":
+                continue
+            scored_at = row.get("scored_at")
+            if scored_at:
+                parsed = _parse_iso(scored_at)
+                if parsed is not None and parsed >= cutoff:
+                    continue
+            due.append(repo)
+        due.sort(key=lambda repo: (
+            self.repos[repo].get("scored_at") or "",
+            self.repos[repo].get("last_seen_at") or "",
+        ))
+        return due[:limit]
+
+    def update_latest(self, repo: str, **payload: object) -> None:
+        """Merge fields into a row's latest payload, creating it first if
+        the row has none yet (a title_only row rebuilt from an issue
+        title, or one seen before latest was recorded)."""
+        row = self.repos.setdefault(
+            repo,
+            {"kind": "repo", "repo": repo, "first_seen_at": _now(), "sources": []},
+        )
+        latest = row.get("latest")
+        if not isinstance(latest, dict):
+            latest = {"repo": repo}
+            row["latest"] = latest
+        latest.update(payload)
 
     def mark_title_only_rows(self) -> int:
         """Flag repo rows that carry no candidate payload.

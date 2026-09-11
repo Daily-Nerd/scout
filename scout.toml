@@ -97,6 +97,15 @@ tree_max_per_run = 300
 # and holding the rest for a later run.
 max_per_run = 25
 
+[refresh]
+# Rows whose metadata was never fetched, or whose score is older than
+# `days`, get a fresh GET /repos/{repo}, a forced tree and README fetch,
+# and a rescore. This is how Reddit-sourced rows pick up stars and
+# pushed_at over time, and how any row's tier stays current as the repo
+# changes. max_per_run caps how many rows refresh in one run.
+days = 14
+max_per_run = 50
+
 [state]
 db_path = "state/scout.db"
 candidates_path = "data/candidates.jsonl"

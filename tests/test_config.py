@@ -33,6 +33,8 @@ def test_repo_config_loads():
     assert "awesome" in config.tiering.list_words
     assert config.tiering.tree_max_per_run == 300
     assert config.filing.max_per_run == 25
+    assert config.refresh.days == 14
+    assert config.refresh.max_per_run == 50
 
 
 def test_terms_match_is_case_insensitive():
@@ -64,6 +66,8 @@ def test_missing_table_uses_defaults(tmp_path):
     ]
     assert config.tiering.tree_max_per_run == 300
     assert config.filing.max_per_run == 25
+    assert config.refresh.days == 14
+    assert config.refresh.max_per_run == 50
 
 
 def test_non_table_section_raises(tmp_path):
@@ -78,3 +82,11 @@ def test_filing_section_overrides_max_per_run(tmp_path):
     path.write_text("[filing]\nmax_per_run = 10\n")
     config = load(path)
     assert config.filing.max_per_run == 10
+
+
+def test_refresh_section_overrides_defaults(tmp_path):
+    path = tmp_path / "scout.toml"
+    path.write_text("[refresh]\ndays = 7\nmax_per_run = 5\n")
+    config = load(path)
+    assert config.refresh.days == 7
+    assert config.refresh.max_per_run == 5

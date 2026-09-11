@@ -101,6 +101,12 @@ class FilingConfig:
 
 
 @dataclass
+class RefreshConfig:
+    days: int = 14
+    max_per_run: int = 50
+
+
+@dataclass
 class StateConfig:
     db_path: Path = Path("state/scout.db")
     candidates_path: Path = Path("data/candidates.jsonl")
@@ -116,6 +122,7 @@ class Config:
     issues: IssuesConfig
     tiering: TieringConfig
     filing: FilingConfig
+    refresh: RefreshConfig
     state: StateConfig
     path: Path
 
@@ -142,6 +149,7 @@ def load(path: str | Path) -> Config:
     issues = _section(data, "issues")
     tiering = _section(data, "tiering")
     filing = _section(data, "filing")
+    refresh = _section(data, "refresh")
     state = _section(data, "state")
 
     return Config(
@@ -194,6 +202,10 @@ def load(path: str | Path) -> Config:
         ),
         filing=FilingConfig(
             max_per_run=int(filing.get("max_per_run", 25)),
+        ),
+        refresh=RefreshConfig(
+            days=int(refresh.get("days", 14)),
+            max_per_run=int(refresh.get("max_per_run", 50)),
         ),
         state=StateConfig(
             db_path=Path(state.get("db_path", "state/scout.db")),

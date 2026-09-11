@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
 from scout.history import History
 from scout.models import Candidate
 from scout.tiering import Component, TierScore
+
+NOW = datetime(2026, 9, 11, tzinfo=UTC)
 
 
 def candidate(repo: str = "alice/memorymesh") -> Candidate:
@@ -284,3 +287,87 @@ def test_pending_candidates_tolerate_extra_payload_keys(tmp_path):
     restored = History(path)
     pending = restored.pending_candidates()
     assert [item.repo for item in pending] == ["alice/memorymesh"]
+
+
+def test_rows_due_for_refresh_orders_oldest_first_and_caps(tmp_path):
+    path = tmp_path / "candidates.jsonl"
+    history = History(path)
+    history.repos["owner/never-scored"] = {
+        "kind": "repo", "repo": "owner/never-scored", "discovery": "seen",
+        "assessment": "none", "last_seen_at": "2026-09-01T00:00:00Z",
+    }
+    history.repos["owner/oldest-score"] = {
+        "kind": "repo", "repo": "owner/oldest-score", "discovery": "filed",
+        "assessment": "tier-b", "scored_at": "2026-08-01T00:00:00Z",
+        "last_seen_at": "2026-08-01T00:00:00Z",
+    }
+    history.repos["owner/mid-score"] = {
+        "kind": "repo", "repo": "owner/mid-score", "discovery": "title_only",
+        "assessment": "none", "scored_at": "2026-08-20T00:00:00Z",
+        "last_seen_at": "2026-08-20T00:00:00Z",
+    }
+    history.repos["owner/fresh-score"] = {
+        "kind": "repo", "repo": "owner/fresh-score", "discovery": "seen",
+        "assessment": "tier-a", "scored_at": "2026-09-10T00:00:00Z",
+        "last_seen_at": "2026-09-10T00:00:00Z",
+    }
+    history.repos["owner/known"] = {
+        "kind": "repo", "repo": "owner/known", "discovery": "seen",
+        "assessment": "atlas-known", "last_seen_at": "2026-08-01T00:00:00Z",
+    }
+    history.repos["owner/retracted"] = {
+        "kind": "repo", "repo": "owner/retracted", "discovery": "retracted",
+        "assessment": "none", "last_seen_at": "2026-08-01T00:00:00Z",
+    }
+
+    due = history.rows_due_for_refresh(NOW, days=14, limit=50)
+    assert due == ["owner/never-scored", "owner/oldest-score", "owner/mid-score"]
+
+    capped = history.rows_due_for_refresh(NOW, days=14, limit=2)
+    assert capped == ["owner/never-scored", "owner/oldest-score"]
+
+
+def test_rows_due_for_refresh_ties_broken_by_last_seen_at(tmp_path):
+    path = tmp_path / "candidates.jsonl"
+    history = History(path)
+    history.repos["owner/seen-later"] = {
+        "kind": "repo", "repo": "owner/seen-later", "discovery": "seen",
+        "assessment": "none", "last_seen_at": "2026-09-05T00:00:00Z",
+    }
+    history.repos["owner/seen-earlier"] = {
+        "kind": "repo", "repo": "owner/seen-earlier", "discovery": "seen",
+        "assessment": "none", "last_seen_at": "2026-09-01T00:00:00Z",
+    }
+    due = history.rows_due_for_refresh(NOW, days=14, limit=50)
+    assert due == ["owner/seen-earlier", "owner/seen-later"]
+
+
+def test_update_latest_merges_fields_into_existing_latest(tmp_path):
+    path = tmp_path / "candidates.jsonl"
+    history = History(path)
+    history.record_candidates([candidate()])
+    history.update_latest("alice/memorymesh", stars=99, pushed_at="2026-09-10T00:00:00Z")
+    history.write()
+
+    restored = History(path)
+    latest = restored.repos["alice/memorymesh"]["latest"]
+    assert latest["stars"] == 99
+    assert latest["pushed_at"] == "2026-09-10T00:00:00Z"
+    assert latest["repo"] == "alice/memorymesh"  # untouched fields survive
+
+
+def test_update_latest_creates_latest_for_a_title_only_row(tmp_path):
+    path = tmp_path / "candidates.jsonl"
+    history = History(path)
+    history.repos["owner/title-only"] = {
+        "kind": "repo", "repo": "owner/title-only", "discovery": "title_only",
+        "title_only": True, "sources": ["github"],
+    }
+    history.update_latest("owner/title-only", source="github", stars=10)
+    history.write()
+
+    restored = History(path)
+    latest = restored.repos["owner/title-only"]["latest"]
+    assert latest["repo"] == "owner/title-only"
+    assert latest["source"] == "github"
+    assert latest["stars"] == 10

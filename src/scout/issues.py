@@ -30,6 +30,7 @@ LABEL_COLOR = "1d76db"
 TIER_LABEL_COLORS = {"scout:tier-a": "0e8a16", "scout:tier-b": "1d76db"}
 
 _CANDIDATE_TITLE_RE = re.compile(r"candidate:\s*([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)")
+_TIER_LABEL_RE = re.compile(r"^scout:tier-[abc]$")
 
 
 @dataclass
@@ -188,6 +189,56 @@ def _ensure_label(
         max_retries=config.issues.max_rate_limit_retries,
     )
     create.raise_for_status()
+
+
+def update_tier_label(
+    config: Config,
+    session: requests.Session,
+    token: str | None,
+    issue_number: int,
+    old_label: str,
+    new_label: str,
+    *,
+    apply: bool,
+    sleep=time.sleep,
+) -> None:
+    """Swap a filed issue's tier label after a refresh changes its tier.
+
+    Fetches the issue's current labels, drops any scout:tier-* label
+    (normally just old_label) and adds new_label, then PATCHes the whole
+    label list back. Nothing else on the issue is touched. In dry mode
+    nothing is fetched or written; the change that would happen is only
+    printed.
+    """
+    if not apply:
+        print(f"would relabel issue #{issue_number}: {old_label} -> {new_label}")
+        return
+    headers = _headers(token)
+    response = request_with_backoff(
+        lambda: session.get(
+            f"{API}/repos/{config.issues.target_repo}/issues/{issue_number}",
+            headers=headers, timeout=30,
+        ),
+        should_retry=github_rate_limited,
+        sleep=sleep,
+        max_retries=config.issues.max_rate_limit_retries,
+    )
+    response.raise_for_status()
+    current = [label.get("name", "") for label in response.json().get("labels", [])]
+    kept = [name for name in current if not _TIER_LABEL_RE.match(name)]
+    updated = [*kept, new_label]
+    patch = request_with_backoff(
+        lambda: session.patch(
+            f"{API}/repos/{config.issues.target_repo}/issues/{issue_number}",
+            headers=headers,
+            json={"labels": updated},
+            timeout=30,
+        ),
+        should_retry=github_rate_limited,
+        sleep=sleep,
+        max_retries=config.issues.max_rate_limit_retries,
+    )
+    patch.raise_for_status()
 
 
 def file_candidates(

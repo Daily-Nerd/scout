@@ -82,6 +82,36 @@ def test_repair_rows_proxy_without_history_returns_empty(tmp_path):
         assert store.repair_rows() == {}
 
 
+def test_rows_due_for_refresh_proxy(tmp_path):
+    from datetime import UTC, datetime
+
+    history_path = tmp_path / "data" / "candidates.jsonl"
+    with Store(tmp_path / "state.db", history_path) as store:
+        store.mark_repo_seen("owner/repo", "github")
+        due = store.rows_due_for_refresh(datetime(2026, 9, 11, tzinfo=UTC), 14, 50)
+        assert due == ["owner/repo"]
+
+
+def test_rows_due_for_refresh_proxy_without_history_returns_empty(tmp_path):
+    from datetime import UTC, datetime
+
+    with Store(tmp_path / "state.db") as store:
+        assert store.rows_due_for_refresh(datetime(2026, 9, 11, tzinfo=UTC), 14, 50) == []
+
+
+def test_update_latest_proxy(tmp_path):
+    history_path = tmp_path / "data" / "candidates.jsonl"
+    with Store(tmp_path / "state.db", history_path) as store:
+        store.mark_repo_seen("owner/repo", "github")
+        store.update_latest("owner/repo", stars=42)
+        assert store.history.repos["owner/repo"]["latest"]["stars"] == 42
+
+
+def test_update_latest_proxy_is_a_no_op_without_history(tmp_path):
+    with Store(tmp_path / "state.db") as store:
+        store.update_latest("owner/repo", stars=42)
+
+
 def test_history_survives_a_new_runner_store(tmp_path):
     state = tmp_path / "state.db"
     history = tmp_path / "data" / "candidates.jsonl"

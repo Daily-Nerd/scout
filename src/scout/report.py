@@ -31,6 +31,9 @@ class RunReport:
     candidates: dict[str, Candidate] = field(default_factory=dict)
     filed: list[str] = field(default_factory=list)
     held: list[str] = field(default_factory=list)
+    refreshed: int = 0
+    tier_changes: list[tuple[str, str, str]] = field(default_factory=list)
+    refresh_failed: list[str] = field(default_factory=list)
 
 
 def _one_line(description: str) -> str:
@@ -84,6 +87,14 @@ def render_report(report: RunReport, ran_at: datetime | None = None) -> str:
     lines.extend(["", "## Filing", "", f"- would file: {len(report.filed)}"])
     lines.append(f"- held back by max_per_run: {len(report.held)}")
     for repo in report.held:
+        lines.append(f"  - {repo}")
+
+    lines.extend(["", "## Refresh", "", f"- refreshed: {report.refreshed}"])
+    lines.append(f"- tier changes: {len(report.tier_changes)}")
+    for repo, old_tier, new_tier in report.tier_changes:
+        lines.append(f"  - {repo}: {old_tier.upper()} -> {new_tier.upper()}")
+    lines.append(f"- failed: {len(report.refresh_failed)}")
+    for repo in report.refresh_failed:
         lines.append(f"  - {repo}")
 
     ranked = sorted(report.scores.values(), key=lambda s: (-s.score, s.repo))

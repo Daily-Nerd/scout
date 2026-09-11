@@ -19,6 +19,7 @@ from pathlib import Path
 
 from . import atlas as atlas_mod
 from . import github_search, issues as issues_mod, reddit, retract as retract_mod
+from . import refresh as refresh_mod
 from . import report as report_mod
 from . import tiering as tiering_mod
 from .config import Config, load
@@ -347,6 +348,10 @@ def _cmd_run(args: argparse.Namespace, config: Config, store: Store) -> int:
         key=lambda repo: (-_score_of(repo), repo),
     )
 
+    refresh_outcome = refresh_mod.refresh(
+        config, store, token=token, apply=args.apply
+    )
+
     report = report_mod.RunReport(
         queries=_query_counts(candidates),
         seen=len(candidates),
@@ -356,6 +361,9 @@ def _cmd_run(args: argparse.Namespace, config: Config, store: Store) -> int:
         candidates={candidate.repo: candidate for candidate in outcome.kept},
         filed=filed_repos,
         held=held_repos,
+        refreshed=len(refresh_outcome.refreshed),
+        tier_changes=refresh_outcome.tier_changes,
+        refresh_failed=refresh_outcome.failed,
     )
     report_path = report_mod.write_report(report, config.state.reports_path)
 

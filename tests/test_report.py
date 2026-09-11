@@ -173,6 +173,42 @@ def test_write_report_names_file_by_utc_timestamp(tmp_path):
     assert "\u2014" not in path.read_text()
 
 
+def test_refresh_section_lists_counts_and_tier_changes():
+    report = RunReport(
+        seen=2,
+        scores={
+            "alice/memorymesh": score("alice/memorymesh", 9.5, "a"),
+            "bob/context-store": score("bob/context-store", 6.0, "b"),
+        },
+        candidates={
+            "alice/memorymesh": candidate("alice/memorymesh"),
+            "bob/context-store": candidate("bob/context-store"),
+        },
+        refreshed=5,
+        tier_changes=[("alice/memorymesh", "b", "a")],
+        refresh_failed=["dead/repo"],
+    )
+    text = render_report(report, RAN_AT)
+    assert "## Refresh" in text
+    filing_index = text.index("## Filing")
+    refresh_index = text.index("## Refresh")
+    assert filing_index < refresh_index
+    section = text[refresh_index:]
+    assert "- refreshed: 5" in section
+    assert "- tier changes: 1" in section
+    assert "alice/memorymesh: B -> A" in section
+    assert "- failed: 1" in section
+    assert "dead/repo" in section
+    assert "\u2014" not in text
+
+
+def test_refresh_section_renders_empty_state():
+    text = render_report(RunReport(), RAN_AT)
+    assert "- refreshed: 0" in text
+    assert "- tier changes: 0" in text
+    assert "- failed: 0" in text
+
+
 def test_long_descriptions_are_truncated_to_one_line():
     long = candidate("eve/chatty", "word " * 60)
     report = RunReport(

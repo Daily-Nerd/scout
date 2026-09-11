@@ -82,7 +82,7 @@ def wired(tmp_path, monkeypatch):
     """Config file plus fakes for every network boundary."""
     config_path = write_config(tmp_path)
     candidates = [github_candidate()]
-    calls = {"github": 0, "reddit": 0, "atlas": 0, "file": 0}
+    calls = {"github": 0, "reddit": 0, "atlas": 0, "file": 0, "refresh": 0}
 
     def fake_github_search(config, store, token=None, **kwargs):
         calls["github"] += 1
@@ -129,6 +129,10 @@ def wired(tmp_path, monkeypatch):
             for c in cands
         ]
 
+    def fake_refresh(config, store, *, token, session=None, apply=False, **kwargs):
+        calls["refresh"] += 1
+        return cli.refresh_mod.RefreshOutcome()
+
     monkeypatch.setattr(cli.github_search, "search", fake_github_search)
     monkeypatch.setattr(cli.reddit, "scan", fake_reddit_scan)
     monkeypatch.setattr(cli.atlas_mod, "load_atlas", fake_load_atlas)
@@ -140,6 +144,7 @@ def wired(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.tiering_mod, "collect_readme_sizes", fake_readme_sizes)
     monkeypatch.setattr(cli.tiering_mod, "collect_tree_signals", fake_tree_signals)
     monkeypatch.setattr(cli.tiering_mod, "score_candidate", fake_score)
+    monkeypatch.setattr(cli.refresh_mod, "refresh", fake_refresh)
     monkeypatch.delenv("SCOUT_GITHUB_TOKEN", raising=False)
     return config_path, candidates, calls
 
@@ -282,6 +287,42 @@ def test_dotenv_does_not_override_existing(tmp_path, monkeypatch):
     monkeypatch.setenv("SCOUT_GITHUB_TOKEN", "env-token")
     cli._load_dotenv(env_path)
     assert os.environ["SCOUT_GITHUB_TOKEN"] == "env-token"
+
+
+def test_run_calls_refresh_after_filing_and_reports_its_outcome(
+    wired, capsys, tmp_path, monkeypatch
+):
+    config_path, _, calls = wired
+    order: list[str] = []
+
+    def ordering_file(config, store, cands, *, apply, token, session=None, **kwargs):
+        order.append("file")
+        return []
+
+    def ordering_refresh(config, store, *, token, session=None, apply=False, **kwargs):
+        order.append("refresh")
+        calls["refresh"] += 1
+        return cli.refresh_mod.RefreshOutcome(
+            refreshed=["owner/refreshed"],
+            tier_changes=[("owner/refreshed", "b", "a")],
+            failed=["owner/dead"],
+        )
+
+    monkeypatch.setattr(cli.issues_mod, "file_candidates", ordering_file)
+    monkeypatch.setattr(cli.refresh_mod, "refresh", ordering_refresh)
+
+    assert main(["run", "--config", str(config_path)]) == 0
+    assert order == ["file", "refresh"]
+    assert calls["refresh"] == 1
+
+    reports = list((tmp_path / "reports").glob("*.md"))
+    assert len(reports) == 1
+    text = reports[0].read_text()
+    assert "## Refresh" in text
+    assert "- refreshed: 1" in text
+    assert "owner/refreshed: B -> A" in text
+    assert "- failed: 1" in text
+    assert "owner/dead" in text
 
 
 def test_run_writes_markdown_report_in_dry_mode(wired, capsys, tmp_path):
