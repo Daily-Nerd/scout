@@ -189,8 +189,11 @@ def _check_then_file(
         )
     for repo, score in scores.items():
         store.record_score(repo, score)
-    for repos in known_reasons.values():
-        for repo in repos:
+    # Only an atlas or archive hit means the atlas knows the project. A
+    # scout issue already filed (REASON_ISSUE) is scout's own doing and
+    # must not read as an atlas verdict, so that row keeps its assessment.
+    for reason in (atlas_mod.REASON_ATLAS, atlas_mod.REASON_ARCHIVE):
+        for repo in known_reasons.get(reason, []):
             store.mark_known(repo)
     results = issues_mod.file_candidates(
         config, store, kept, apply=apply, token=token, session=session,

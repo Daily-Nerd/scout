@@ -6,7 +6,7 @@ import os
 import pytest
 
 from scout import cli
-from scout.atlas import AtlasSet, REASON_ATLAS
+from scout.atlas import AtlasSet, REASON_ARCHIVE, REASON_ATLAS, REASON_ISSUE
 from scout.cli import main
 from scout.models import Candidate
 
@@ -470,6 +470,46 @@ def test_run_dry_mode_persists_scores_and_known_repos(wired, tmp_path):
     assert rows["new/hot"]["assessment"] == "tier-a"
     assert rows["known/repo"]["assessment"] == "atlas-known"
     assert "score" not in rows["known/repo"]
+
+
+def test_run_marks_atlas_known_only_for_atlas_and_archive_reasons(
+    wired, tmp_path, monkeypatch
+):
+    """A scout issue already filed says nothing about the atlas: the row's
+    earlier assessment must survive, while atlas and archive hits flip
+    to atlas-known."""
+    config_path, candidates, _ = wired
+    candidates.extend([
+        Candidate(repo="filed/repo", source="reddit",
+                  source_url="https://www.reddit.com/r/x/comments/1/a/"),
+        Candidate(repo="archived/repo", source="reddit",
+                  source_url="https://www.reddit.com/r/x/comments/1/b/"),
+    ])
+    monkeypatch.setattr(
+        cli.atlas_mod, "load_atlas",
+        lambda config, token=None, **kwargs: AtlasSet(reasons={
+            "known/repo": REASON_ATLAS,
+            "archived/repo": REASON_ARCHIVE,
+            "filed/repo": REASON_ISSUE,
+        }),
+    )
+    history_path = tmp_path / "data" / "candidates.jsonl"
+    from scout.store import Store
+
+    with Store(tmp_path / "state" / "scout.db", history_path) as store:
+        store.record_candidates(candidates)
+        store.history.repos["filed/repo"]["assessment"] = "tier-b"
+
+    assert main(["run", "--config", str(config_path)]) == 0
+
+    rows = {
+        json.loads(line)["repo"]: json.loads(line)
+        for line in history_path.read_text().splitlines()
+        if json.loads(line).get("kind") == "repo"
+    }
+    assert rows["archived/repo"]["assessment"] == "atlas-known"
+    assert rows["filed/repo"]["assessment"] == "tier-b"
+    assert "score" not in rows["filed/repo"]
 
 
 def test_repair_flags_title_only_and_prints_counts(wired, capsys):
