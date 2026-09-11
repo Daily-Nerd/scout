@@ -1,16 +1,19 @@
 ---
+id: 1
 type: fence
 title: r/mcp RSS throttles anonymous clients on first contact; keep it last in the subreddit list
 severity: medium
 confidence: 0.9
 authors: ["kimi-code"]
+promoted_by: Kibukx
+promoted_by_source: git-config-interactive
 anchors:
   - path: scout.toml
   - pattern: "subreddits"
 evidence:
   - commit: 3a1b8e3
   - note: measured 2026-09-10, r/mcp returned 429 as the second request at a 2s interval, and again on first contact minutes later at a 5s interval, while r/AIMemory returned 200 throughout
-status: candidate
+status: active
 ---
 
 r/mcp is a large subreddit and its `/new.rss` feed throttles anonymous
