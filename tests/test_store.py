@@ -1,4 +1,17 @@
 from scout.store import Store
+from scout.tiering import Component, TierScore
+
+
+def tier_score(repo: str = "owner/repo") -> TierScore:
+    return TierScore(
+        repo=repo,
+        score=7.5,
+        tier="b",
+        label="scout:tier-b",
+        components={"stars": Component(input=10, value=7.5)},
+        absent=[],
+        scored_at="2026-09-11T00:00:00Z",
+    )
 
 
 def test_posts_round_trip(tmp_path):
@@ -32,6 +45,41 @@ def test_filed_issues(tmp_path):
         store.mark_filed("owner/repo", 42)
         assert store.is_filed("owner/repo")
         assert store.filed_issue_number("owner/repo") == 42
+
+
+def test_score_and_known_proxies_reach_history(tmp_path):
+    history_path = tmp_path / "data" / "candidates.jsonl"
+    with Store(tmp_path / "state.db", history_path) as store:
+        store.record_score("owner/repo", tier_score())
+        store.mark_known("owner/known")
+        store.mark_retracted("owner/retracted")
+
+    with Store(tmp_path / "fresh.db", history_path) as store:
+        assert store.history.repos["owner/repo"]["tier"] == "b"
+        assert store.history.repos["owner/known"]["assessment"] == "atlas-known"
+        assert store.history.repos["owner/retracted"]["discovery"] == "retracted"
+
+
+def test_score_and_known_proxies_are_no_ops_without_history(tmp_path):
+    with Store(tmp_path / "state.db") as store:
+        store.record_score("owner/repo", tier_score())
+        store.mark_known("owner/known")
+        store.mark_retracted("owner/retracted")
+
+
+def test_repair_rows_proxy(tmp_path):
+    history_path = tmp_path / "data" / "candidates.jsonl"
+    with Store(tmp_path / "state.db", history_path) as store:
+        store.mark_repo_seen("owner/repo", "github")
+        # simulate a pre-existing row that predates discovery/assessment
+        del store.history.repos["owner/repo"]["discovery"]
+        counts = store.repair_rows()
+        assert counts["discovery"] == 1
+
+
+def test_repair_rows_proxy_without_history_returns_empty(tmp_path):
+    with Store(tmp_path / "state.db") as store:
+        assert store.repair_rows() == {}
 
 
 def test_history_survives_a_new_runner_store(tmp_path):

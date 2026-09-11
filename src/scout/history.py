@@ -6,8 +6,12 @@ import json
 from dataclasses import asdict, fields
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .models import Candidate
+
+if TYPE_CHECKING:
+    from .tiering import TierScore
 
 
 def _now() -> str:
@@ -76,6 +80,7 @@ class History:
                 "first_seen_at": now,
                 "sources": [],
                 "status": "pending",
+                "discovery": "seen",
             },
         )
         row["last_seen_at"] = now
@@ -104,6 +109,53 @@ class History:
         )
         row["issue_number"] = issue_number
         row["status"] = "filed"
+        row["discovery"] = "filed"
+
+    def record_score(self, repo: str, score: TierScore) -> None:
+        """Persist a TierScore onto the repo's row.
+
+        Score and each component value are rounded to 4 decimals. A
+        component's input is stored as-is (lists stay lists) since it must
+        already be JSON-serializable by the time it reaches a TierScore.
+        """
+        row = self.repos.setdefault(
+            repo,
+            {"kind": "repo", "repo": repo, "first_seen_at": _now(), "sources": []},
+        )
+        row["score"] = round(score.score, 4)
+        row["tier"] = score.tier
+        row["components"] = {
+            name: {
+                "input": component.input,
+                "value": None if component.value is None else round(component.value, 4),
+            }
+            for name, component in score.components.items()
+        }
+        row["absent_components"] = list(score.absent)
+        row["scored_at"] = score.scored_at
+        row["assessment"] = f"tier-{score.tier}"
+
+    def mark_known(self, repo: str) -> None:
+        """Flag a repo the atlas already knows about. Known repos are not scored."""
+        row = self.repos.setdefault(
+            repo,
+            {"kind": "repo", "repo": repo, "first_seen_at": _now(), "sources": []},
+        )
+        row["assessment"] = "atlas-known"
+
+    def mark_retracted(self, repo: str) -> None:
+        row = self.repos.setdefault(
+            repo,
+            {"kind": "repo", "repo": repo, "first_seen_at": _now(), "sources": []},
+        )
+        row["discovery"] = "retracted"
+
+    def repo_for_issue(self, issue_number: int) -> str | None:
+        """Reverse lookup: the repo whose row carries this issue number."""
+        for repo, row in self.repos.items():
+            if row.get("issue_number") == issue_number:
+                return repo
+        return None
 
     def mark_issues_migrated(self) -> None:
         self.issues_migrated = True
@@ -141,8 +193,43 @@ class History:
         for row in self.repos.values():
             if not isinstance(row.get("latest"), dict) and not row.get("title_only"):
                 row["title_only"] = True
+                if not row.get("issue_number"):
+                    row["discovery"] = "title_only"
                 marked += 1
         return marked
+
+    def repair_rows(self, retracted_through: int | None = None) -> dict[str, int]:
+        """Backfill discovery and assessment on rows written before those
+        fields existed, and fix the readme_bytes 404-as-null cache bug.
+
+        Never touches a field a row already carries; existing data always
+        wins over a guess. Returns how many rows changed per field.
+        """
+        counts = {"discovery": 0, "assessment": 0, "readme_bytes": 0}
+        for row in self.repos.values():
+            if row.get("kind") != "repo":
+                continue
+            if "discovery" not in row:
+                issue_number = row.get("issue_number")
+                if row.get("title_only"):
+                    row["discovery"] = "title_only"
+                elif issue_number and retracted_through is not None \
+                        and issue_number <= retracted_through:
+                    row["discovery"] = "retracted"
+                elif issue_number:
+                    row["discovery"] = "filed"
+                else:
+                    row["discovery"] = "seen"
+                counts["discovery"] += 1
+            if "assessment" not in row:
+                row["assessment"] = "none"
+                counts["assessment"] += 1
+            latest = row.get("latest")
+            if isinstance(latest, dict) and "readme_bytes" in latest \
+                    and latest["readme_bytes"] is None:
+                latest["readme_bytes"] = 0
+                counts["readme_bytes"] += 1
+        return counts
 
     def write(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

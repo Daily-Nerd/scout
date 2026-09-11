@@ -10,8 +10,12 @@ from __future__ import annotations
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .history import History
+
+if TYPE_CHECKING:
+    from .tiering import TierScore
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS seen_posts (
@@ -149,3 +153,22 @@ class Store:
         if self.history is None:
             return 0
         return self.history.mark_title_only_rows()
+
+    # scoring and assessment -------------------------------------------
+
+    def record_score(self, repo: str, score: TierScore) -> None:
+        if self.history is not None:
+            self.history.record_score(repo, score)
+
+    def mark_known(self, repo: str) -> None:
+        if self.history is not None:
+            self.history.mark_known(repo)
+
+    def mark_retracted(self, repo: str) -> None:
+        if self.history is not None:
+            self.history.mark_retracted(repo)
+
+    def repair_rows(self, retracted_through: int | None = None) -> dict[str, int]:
+        if self.history is None:
+            return {}
+        return self.history.repair_rows(retracted_through)

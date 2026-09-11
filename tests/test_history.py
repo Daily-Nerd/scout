@@ -4,6 +4,7 @@ import json
 
 from scout.history import History
 from scout.models import Candidate
+from scout.tiering import Component, TierScore
 
 
 def candidate(repo: str = "alice/memorymesh") -> Candidate:
@@ -98,6 +99,161 @@ def test_readme_size_round_trips_through_history(tmp_path):
     assert restored.readme_size("owner/noreadme") is None
     assert restored.has_readme_size("owner/noreadme")
     assert not restored.has_readme_size("never/seen")
+
+
+def tier_score(repo: str = "alice/memorymesh") -> TierScore:
+    return TierScore(
+        repo=repo,
+        score=9.123456,
+        tier="a",
+        label="scout:tier-a",
+        components={
+            "stars": Component(input=120, value=6.123456),
+            "topics": Component(input=["agent-memory"], value=3.0),
+            "readme": Component(input=None, value=None),
+        },
+        absent=["readme"],
+        scored_at="2026-09-11T00:00:00Z",
+    )
+
+
+def test_record_score_round_trips_through_write_and_load(tmp_path):
+    path = tmp_path / "candidates.jsonl"
+    history = History(path)
+    history.mark_repo_seen("alice/memorymesh", "github")
+    history.record_score("alice/memorymesh", tier_score())
+    history.write()
+
+    restored = History(path)
+    row = restored.repos["alice/memorymesh"]
+    assert row["score"] == 9.1235
+    assert row["tier"] == "a"
+    assert row["assessment"] == "tier-a"
+    assert row["scored_at"] == "2026-09-11T00:00:00Z"
+    assert row["absent_components"] == ["readme"]
+    assert row["components"]["stars"] == {"input": 120, "value": 6.1235}
+    assert row["components"]["topics"] == {"input": ["agent-memory"], "value": 3.0}
+    assert row["components"]["readme"] == {"input": None, "value": None}
+
+
+def test_mark_known_sets_assessment_without_scoring(tmp_path):
+    path = tmp_path / "candidates.jsonl"
+    history = History(path)
+    history.mark_repo_seen("owner/known", "github")
+    history.mark_known("owner/known")
+    history.write()
+
+    restored = History(path)
+    row = restored.repos["owner/known"]
+    assert row["assessment"] == "atlas-known"
+    assert "score" not in row
+
+
+def test_mark_repo_seen_sets_discovery_only_on_creation(tmp_path):
+    path = tmp_path / "candidates.jsonl"
+    history = History(path)
+    history.mark_repo_seen("alice/memorymesh", "github")
+    assert history.repos["alice/memorymesh"]["discovery"] == "seen"
+
+    history.mark_issue("alice/memorymesh", 42)
+    assert history.repos["alice/memorymesh"]["discovery"] == "filed"
+
+    # a rescan must not downgrade discovery back to "seen"
+    history.mark_repo_seen("alice/memorymesh", "github")
+    assert history.repos["alice/memorymesh"]["discovery"] == "filed"
+
+
+def test_mark_title_only_rows_sets_discovery_only_without_issue_number(tmp_path):
+    path = tmp_path / "candidates.jsonl"
+    history = History(path)
+    history.repos["owner/junk"] = {"kind": "repo", "repo": "owner/junk"}
+    history.repos["owner/filed-junk"] = {
+        "kind": "repo", "repo": "owner/filed-junk", "issue_number": 5,
+        "discovery": "filed",
+    }
+    history.mark_title_only_rows()
+    assert history.repos["owner/junk"]["discovery"] == "title_only"
+    # already has an issue, so discovery stays "filed", not "title_only"
+    assert history.repos["owner/filed-junk"]["discovery"] == "filed"
+
+
+def test_mark_retracted_sets_discovery(tmp_path):
+    path = tmp_path / "candidates.jsonl"
+    history = History(path)
+    history.mark_issue("owner/repo", 9)
+    history.mark_retracted("owner/repo")
+    history.write()
+
+    restored = History(path)
+    assert restored.repos["owner/repo"]["discovery"] == "retracted"
+
+
+def test_repair_rows_backfills_missing_fields_without_touching_existing(tmp_path):
+    path = tmp_path / "candidates.jsonl"
+    history = History(path)
+    history.repos["owner/pending"] = {"kind": "repo", "repo": "owner/pending"}
+    history.repos["owner/retracted-candidate"] = {
+        "kind": "repo", "repo": "owner/retracted-candidate", "issue_number": 12,
+    }
+    history.repos["owner/still-filed"] = {
+        "kind": "repo", "repo": "owner/still-filed", "issue_number": 200,
+    }
+    history.repos["owner/title-only"] = {
+        "kind": "repo", "repo": "owner/title-only", "title_only": True,
+        "issue_number": 3,
+    }
+    history.repos["owner/no-readme"] = {
+        "kind": "repo", "repo": "owner/no-readme",
+        "latest": {"repo": "owner/no-readme", "readme_bytes": None},
+    }
+    history.repos["owner/already-tagged"] = {
+        "kind": "repo", "repo": "owner/already-tagged",
+        "discovery": "seen", "assessment": "tier-b",
+    }
+
+    counts = history.repair_rows(retracted_through=100)
+
+    assert history.repos["owner/pending"]["discovery"] == "seen"
+    assert history.repos["owner/retracted-candidate"]["discovery"] == "retracted"
+    assert history.repos["owner/still-filed"]["discovery"] == "filed"
+    assert history.repos["owner/title-only"]["discovery"] == "title_only"
+    assert history.repos["owner/no-readme"]["latest"]["readme_bytes"] == 0
+    assert history.repos["owner/pending"]["assessment"] == "none"
+    assert history.repos["owner/already-tagged"]["discovery"] == "seen"
+    assert history.repos["owner/already-tagged"]["assessment"] == "tier-b"
+    assert counts == {"discovery": 5, "assessment": 5, "readme_bytes": 1}
+
+
+def test_repair_rows_without_retracted_through_leaves_issues_filed(tmp_path):
+    path = tmp_path / "candidates.jsonl"
+    history = History(path)
+    history.repos["owner/old-issue"] = {
+        "kind": "repo", "repo": "owner/old-issue", "issue_number": 1,
+    }
+    history.repair_rows(retracted_through=None)
+    assert history.repos["owner/old-issue"]["discovery"] == "filed"
+
+
+def test_repo_for_issue_reverse_lookup(tmp_path):
+    path = tmp_path / "candidates.jsonl"
+    history = History(path)
+    history.mark_issue("owner/repo", 42)
+    assert history.repo_for_issue(42) == "owner/repo"
+    assert history.repo_for_issue(999) is None
+
+
+def test_unknown_keys_on_loaded_row_survive_write(tmp_path):
+    path = tmp_path / "candidates.jsonl"
+    path.write_text(json.dumps({
+        "kind": "repo", "repo": "owner/repo", "sources": [],
+        "some_future_field": "keep me",
+    }) + "\n")
+    history = History(path)
+    history.mark_repo_seen("owner/repo", "github")
+    history.write()
+
+    restored = History(path)
+    assert restored.repos["owner/repo"]["some_future_field"] == "keep me"
 
 
 def test_pending_candidates_tolerate_extra_payload_keys(tmp_path):
