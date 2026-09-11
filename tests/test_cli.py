@@ -325,6 +325,31 @@ def test_run_calls_refresh_after_filing_and_reports_its_outcome(
     assert "owner/dead" in text
 
 
+def test_run_survives_a_connection_error_in_refresh_and_reports_it(
+    wired, capsys, tmp_path, monkeypatch
+):
+    """Filing is already done by the time refresh runs; a network error
+    there must land in the report as a failed pass, not abort the run."""
+    config_path, _, _ = wired
+
+    def broken_refresh(config, store, *, token, session=None, apply=False, **kwargs):
+        import requests
+
+        raise requests.ConnectionError("boom")
+
+    monkeypatch.setattr(cli.refresh_mod, "refresh", broken_refresh)
+
+    assert main(["run", "--config", str(config_path)]) == 0
+    assert "refresh pass: connection error" in capsys.readouterr().err
+
+    reports = list((tmp_path / "reports").glob("*.md"))
+    assert len(reports) == 1
+    text = reports[0].read_text()
+    assert "- refreshed: 0" in text
+    assert "- failed: 1" in text
+    assert "refresh pass: connection error" in text
+
+
 def test_run_writes_markdown_report_in_dry_mode(wired, capsys, tmp_path):
     config_path, _, _ = wired
     assert main(["run", "--config", str(config_path)]) == 0

@@ -351,9 +351,16 @@ def _cmd_run(args: argparse.Namespace, config: Config, store: Store) -> int:
         key=lambda repo: (-_score_of(repo), repo),
     )
 
-    refresh_outcome = refresh_mod.refresh(
-        config, store, token=token, apply=args.apply
-    )
+    # Filing is done by now; a network error inside refresh is reported as
+    # a failed pass rather than aborting the run and losing the report.
+    try:
+        refresh_outcome = refresh_mod.refresh(
+            config, store, token=token, apply=args.apply
+        )
+    except requests.RequestException as exc:
+        failure = f"refresh pass: {_request_error_label(exc)}"
+        print(failure, file=sys.stderr)
+        refresh_outcome = refresh_mod.RefreshOutcome(failed=[failure])
 
     report = report_mod.RunReport(
         queries=_query_counts(candidates),
@@ -378,6 +385,15 @@ def _cmd_run(args: argparse.Namespace, config: Config, store: Store) -> int:
     print(f"run log: {log_path}")
     print(f"report: {report_path}")
     return 0
+
+
+def _request_error_label(exc: requests.RequestException) -> str:
+    """A short, stable label for a requests failure, for the run report."""
+    if isinstance(exc, requests.ConnectionError):
+        return "connection error"
+    if isinstance(exc, requests.Timeout):
+        return "timeout"
+    return "request error"
 
 
 def _query_counts(candidates: list[Candidate]) -> dict[str, int]:
