@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from . import atlas as atlas_mod
-from . import github_search, issues as issues_mod, reddit
+from . import github_search, issues as issues_mod, reddit, retract as retract_mod
 from .config import Config, load
 from .models import Candidate
 from .store import Store
@@ -58,6 +58,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_run = sub.add_parser("run", help="scan, check and file in one pass")
     _add_common(p_run)
     p_run.add_argument("--apply", action="store_true", help="create the issues")
+
+    p_retract = sub.add_parser(
+        "retract",
+        help="close a misfired candidate batch under scout:retracted",
+    )
+    _add_common(p_retract)
+    p_retract.add_argument(
+        "--apply", action="store_true", help="close the issues and pin the explainer"
+    )
+
+    p_repair = sub.add_parser(
+        "repair", help="flag history rows that carry no candidate payload"
+    )
+    _add_common(p_repair)
 
     return parser
 
@@ -170,14 +184,14 @@ def _cmd_scan(args: argparse.Namespace, config: Config, store: Store) -> int:
 
 
 def _cmd_check(args: argparse.Namespace, config: Config, store: Store) -> int:
-    if not _migrate_history(config, store, _token()):
-        return 1
     try:
         candidates = _gather(
             config, store, "all", _token(), include_pending=True
         )
     except github_search.TokenMissingError as exc:
         print(f"check: {exc}", file=sys.stderr)
+        return 1
+    if not _migrate_history(config, store, _token()):
         return 1
     known = atlas_mod.load_atlas(config, token=_token())
     for candidate in candidates:
@@ -191,14 +205,14 @@ def _cmd_check(args: argparse.Namespace, config: Config, store: Store) -> int:
 
 def _cmd_file(args: argparse.Namespace, config: Config, store: Store) -> int:
     token = _token()
-    if not _migrate_history(config, store, token):
-        return 1
     try:
         candidates = _gather(
             config, store, "all", token, include_pending=True
         )
     except github_search.TokenMissingError as exc:
         print(f"file: {exc}", file=sys.stderr)
+        return 1
+    if not _migrate_history(config, store, token):
         return 1
     try:
         _, _, results = _check_then_file(
@@ -216,14 +230,14 @@ def _cmd_file(args: argparse.Namespace, config: Config, store: Store) -> int:
 
 def _cmd_run(args: argparse.Namespace, config: Config, store: Store) -> int:
     token = _token()
-    if not _migrate_history(config, store, token):
-        return 1
     try:
         candidates = _gather(
             config, store, "all", token, include_pending=True
         )
     except github_search.TokenMissingError as exc:
         print(f"run: {exc}", file=sys.stderr)
+        return 1
+    if not _migrate_history(config, store, token):
         return 1
     try:
         _, known_skipped, results = _check_then_file(
@@ -269,6 +283,34 @@ def _cmd_run(args: argparse.Namespace, config: Config, store: Store) -> int:
     return 0
 
 
+def _cmd_retract(args: argparse.Namespace, config: Config, store: Store) -> int:
+    token = _token()
+    try:
+        result = retract_mod.retract(config, apply=args.apply, token=token)
+    except retract_mod.TokenMissingError as exc:
+        print(f"retract: {exc}", file=sys.stderr)
+        return 1
+    except requests.RequestException as exc:
+        print(f"retract: {exc}", file=sys.stderr)
+        return 1
+    verb = "closed" if result.apply else "would close"
+    for number, title, _labels in result.issues:
+        print(f"{verb} #{number}: {title}")
+    print(f"{verb}: {result.found}")
+    if result.apply and result.explainer_number is not None:
+        pin_state = "pinned" if result.pinned else "not pinned, see warning above"
+        print(f"explainer: issue #{result.explainer_number} ({pin_state})")
+    elif not result.apply:
+        print("dry run; pass --apply to close and pin the explainer")
+    return 0
+
+
+def _cmd_repair(args: argparse.Namespace, config: Config, store: Store) -> int:
+    marked = store.mark_title_only_rows()
+    print(f"flagged {marked} title-only history rows")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     _load_dotenv(args.config.parent / ".env")
@@ -283,6 +325,10 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_file(args, config, store)
         if args.command == "run":
             return _cmd_run(args, config, store)
+        if args.command == "retract":
+            return _cmd_retract(args, config, store)
+        if args.command == "repair":
+            return _cmd_repair(args, config, store)
     return 2
 
 

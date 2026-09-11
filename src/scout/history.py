@@ -105,6 +105,20 @@ class History:
     def mark_issues_migrated(self) -> None:
         self.issues_migrated = True
 
+    def mark_title_only_rows(self) -> int:
+        """Flag repo rows that carry no candidate payload.
+
+        Rows rebuilt from issue titles alone hold no stars, description or
+        source data, so they never count as records with data. A repo row
+        written by a normal scan always has a latest payload.
+        """
+        marked = 0
+        for row in self.repos.values():
+            if not isinstance(row.get("latest"), dict) and not row.get("title_only"):
+                row["title_only"] = True
+                marked += 1
+        return marked
+
     def write(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         rows = [*self.repos.values(), *self.posts.values()]

@@ -132,3 +132,8 @@ class Store:
     def mark_issues_migrated(self) -> None:
         if self.history is not None:
             self.history.mark_issues_migrated()
+
+    def mark_title_only_rows(self) -> int:
+        if self.history is None:
+            return 0
+        return self.history.mark_title_only_rows()
