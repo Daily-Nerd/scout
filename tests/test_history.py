@@ -156,6 +156,30 @@ def test_record_score_round_trips_through_write_and_load(tmp_path):
     assert row["components"]["readme"] == {"input": None, "value": None}
 
 
+def test_rows_created_by_any_writer_start_pending_and_seen(tmp_path):
+    """Whichever method first touches a repo, the row it creates carries
+    the same defaults as one written by mark_repo_seen."""
+    path = tmp_path / "candidates.jsonl"
+    history = History(path)
+    history.record_score("owner/scored", tier_score("owner/scored"))
+    history.mark_known("owner/known")
+    history.mark_retracted("owner/retracted")
+    history.mark_refresh_attempt("owner/attempted", "2026-09-11T00:00:00Z")
+    history.update_latest("owner/latest", stars=1)
+    history.write()
+
+    restored = History(path)
+    for repo in ("owner/scored", "owner/known", "owner/attempted", "owner/latest"):
+        row = restored.repos[repo]
+        assert row["status"] == "pending", repo
+        assert row["discovery"] == "seen", repo
+        assert row["sources"] == [], repo
+        assert row["first_seen_at"], repo
+    # mark_retracted overrides the discovery default it just created
+    assert restored.repos["owner/retracted"]["status"] == "pending"
+    assert restored.repos["owner/retracted"]["discovery"] == "retracted"
+
+
 def test_mark_known_sets_assessment_without_scoring(tmp_path):
     path = tmp_path / "candidates.jsonl"
     history = History(path)

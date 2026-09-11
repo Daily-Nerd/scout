@@ -30,6 +30,23 @@ def _parse_iso(value: str) -> datetime | None:
     return parsed
 
 
+def _new_row(repo: str, now: str | None = None) -> dict:
+    """A fresh repo row with the defaults every writer agrees on.
+
+    Whichever method first touches a repo creates its row through here,
+    so a row scored, flagged or refreshed before it was ever scanned
+    still carries `status` and `discovery` like a scanned one does.
+    """
+    return {
+        "kind": "repo",
+        "repo": repo,
+        "first_seen_at": now or _now(),
+        "sources": [],
+        "status": "pending",
+        "discovery": "seen",
+    }
+
+
 class History:
     """JSONL-backed index for durable discovery state and provenance."""
 
@@ -84,17 +101,7 @@ class History:
 
     def mark_repo_seen(self, repo: str, source: str) -> None:
         now = _now()
-        row = self.repos.setdefault(
-            repo,
-            {
-                "kind": "repo",
-                "repo": repo,
-                "first_seen_at": now,
-                "sources": [],
-                "status": "pending",
-                "discovery": "seen",
-            },
-        )
+        row = self.repos.setdefault(repo, _new_row(repo, now))
         row["last_seen_at"] = now
         if source not in row.setdefault("sources", []):
             row["sources"].append(source)
@@ -115,10 +122,7 @@ class History:
                 source_urls.append(candidate.source_url)
 
     def mark_issue(self, repo: str, issue_number: int) -> None:
-        row = self.repos.setdefault(
-            repo,
-            {"kind": "repo", "repo": repo, "first_seen_at": _now(), "sources": []},
-        )
+        row = self.repos.setdefault(repo, _new_row(repo))
         row["issue_number"] = issue_number
         row["status"] = "filed"
         row["discovery"] = "filed"
@@ -130,10 +134,7 @@ class History:
         component's input is stored as-is (lists stay lists) since it must
         already be JSON-serializable by the time it reaches a TierScore.
         """
-        row = self.repos.setdefault(
-            repo,
-            {"kind": "repo", "repo": repo, "first_seen_at": _now(), "sources": []},
-        )
+        row = self.repos.setdefault(repo, _new_row(repo))
         row["score"] = round(score.score, 4)
         row["tier"] = score.tier
         row["components"] = {
@@ -149,17 +150,11 @@ class History:
 
     def mark_known(self, repo: str) -> None:
         """Flag a repo the atlas already knows about. Known repos are not scored."""
-        row = self.repos.setdefault(
-            repo,
-            {"kind": "repo", "repo": repo, "first_seen_at": _now(), "sources": []},
-        )
+        row = self.repos.setdefault(repo, _new_row(repo))
         row["assessment"] = "atlas-known"
 
     def mark_retracted(self, repo: str) -> None:
-        row = self.repos.setdefault(
-            repo,
-            {"kind": "repo", "repo": repo, "first_seen_at": _now(), "sources": []},
-        )
+        row = self.repos.setdefault(repo, _new_row(repo))
         row["discovery"] = "retracted"
 
     def repo_for_issue(self, issue_number: int) -> str | None:
@@ -272,10 +267,7 @@ class History:
         "label patch failed") is set on failure and removed entirely on
         success, so a clean row carries no error key at all.
         """
-        row = self.repos.setdefault(
-            repo,
-            {"kind": "repo", "repo": repo, "first_seen_at": _now(), "sources": []},
-        )
+        row = self.repos.setdefault(repo, _new_row(repo))
         row["refresh_attempted_at"] = attempted_at
         if error:
             row["refresh_error"] = error
@@ -286,10 +278,7 @@ class History:
         """Merge fields into a row's latest payload, creating it first if
         the row has none yet (a title_only row rebuilt from an issue
         title, or one seen before latest was recorded)."""
-        row = self.repos.setdefault(
-            repo,
-            {"kind": "repo", "repo": repo, "first_seen_at": _now(), "sources": []},
-        )
+        row = self.repos.setdefault(repo, _new_row(repo))
         latest = row.get("latest")
         if not isinstance(latest, dict):
             latest = {"repo": repo}
