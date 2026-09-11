@@ -41,6 +41,22 @@ jobs:
 
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
 
+      # state/ is gitignored, so without this cache every run re-downloads
+      # the atlas tarball and re-walks the archive org. Keyed by day: the
+      # first run of a day builds the set, later runs reuse it, and the
+      # 24h TTL inside atlas.py still guards against a stale restore.
+      - name: Day key for the atlas cache
+        id: day
+        run: echo "day=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore atlas set cache
+        id: atlas-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: state/atlas-cache.json
+          key: scout-atlas-${{ steps.day.outputs.day }}
+          restore-keys: scout-atlas-
+
       - name: Run scout
         # Prefer the scout-notary installation token once configured. Until
         # then the built-in token is enough: search needs no special scope
@@ -54,8 +70,17 @@ jobs:
             uv run scout run
           fi
 
+      - name: Save atlas set cache
+        # A cache-hit means the file is already stored under this key;
+        # re-saving the same key fails the job.
+        if: success() && steps.atlas-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: state/atlas-cache.json
+          key: scout-atlas-${{ steps.day.outputs.day }}
+
       - name: Persist scout history
-        if: always()
+        if: success()
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
         run: |
@@ -76,3 +101,31 @@ jobs:
                 --method PUT \
                 "repos/${GITHUB_REPOSITORY}/contents/data/candidates.jsonl" \
                 --input -
+
+      # One timestamped report per run; filenames are unique, so any file
+      # already committed to HEAD is skipped and only new reports upload.
+      - name: Persist run reports
+        if: success()
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+        run: |
+          if [ ! -d reports ]; then
+            exit 0
+          fi
+          new_files=0
+          for file in reports/*.md; do
+            [ -e "$file" ] || continue
+            if git cat-file -e "HEAD:$file" 2>/dev/null; then
+              continue
+            fi
+            new_files=$((new_files + 1))
+            jq -n \
+              --arg message "chore: add scout run report ${file##*/}" \
+              --rawfile content "$file" \
+              '{message: $message, content: ($content | @base64)}' \
+              | gh api \
+                  --method PUT \
+                  "repos/${GITHUB_REPOSITORY}/contents/$file" \
+                  --input -
+          done
+          echo "persisted $new_files new report file(s)"

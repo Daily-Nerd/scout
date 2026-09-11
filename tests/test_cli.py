@@ -33,9 +33,23 @@ archive_org = "agent-memory-atlas-archive"
 target_repo = "Daily-Nerd/scout"
 label = "scout:candidate"
 
+[tiering]
+stars_weight = 2.0
+stars_cap = 500
+recency_weight = 4.0
+recency_window_days = 90
+name_weight = 2.0
+readme_weight = 2.0
+readme_cap_bytes = 20000
+topic_weight = 1.0
+density_weight = 3.0
+tier_a_min = 8.0
+tier_b_min = 5.0
+
 [state]
 db_path = "{db_path}"
 candidates_path = "{history_path}"
+reports_path = "{reports_path}"
 """
 
 
@@ -44,6 +58,7 @@ def write_config(tmp_path) -> object:
     path.write_text(CONFIG_TEMPLATE.format(
         db_path=tmp_path / "state" / "scout.db",
         history_path=tmp_path / "data" / "candidates.jsonl",
+        reports_path=tmp_path / "reports",
     ))
     return path
 
@@ -69,7 +84,7 @@ def wired(tmp_path, monkeypatch):
     candidates = [github_candidate()]
     calls = {"github": 0, "reddit": 0, "atlas": 0, "file": 0}
 
-    def fake_github_search(config, store, token=None):
+    def fake_github_search(config, store, token=None, **kwargs):
         calls["github"] += 1
         return list(candidates)
 
@@ -77,11 +92,23 @@ def wired(tmp_path, monkeypatch):
         calls["reddit"] += 1
         return []
 
-    def fake_load_atlas(config, token=None):
+    def fake_load_atlas(config, token=None, **kwargs):
         calls["atlas"] += 1
         return AtlasSet(reasons={"known/repo": REASON_ATLAS})
 
-    def fake_file(config, store, cands, *, apply, token, session=None):
+    def fake_readme_sizes(config, store, cands, *, token, session=None):
+        return {}
+
+    def fake_score(config, candidate, *, readme_bytes=None, now=None):
+        return cli.tiering_mod.TierScore(
+            repo=candidate.repo,
+            score=9.0,
+            tier="a",
+            label="scout:tier-a",
+            components={"stars": 9.0},
+        )
+
+    def fake_file(config, store, cands, *, apply, token, session=None, **kwargs):
         calls["file"] += 1
         from scout import issues as issues_mod
 
@@ -101,6 +128,11 @@ def wired(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.atlas_mod, "load_atlas", fake_load_atlas)
     monkeypatch.setattr(cli.issues_mod, "file_candidates", fake_file)
     monkeypatch.setattr(cli.issues_mod, "migrate_existing_issues", lambda *args: 0)
+    monkeypatch.setattr(
+        cli.issues_mod, "fetch_existing_issue_repos", lambda *args, **kwargs: {}
+    )
+    monkeypatch.setattr(cli.tiering_mod, "collect_readme_sizes", fake_readme_sizes)
+    monkeypatch.setattr(cli.tiering_mod, "score_candidate", fake_score)
     monkeypatch.delenv("SCOUT_GITHUB_TOKEN", raising=False)
     return config_path, candidates, calls
 
@@ -138,7 +170,7 @@ def test_scan_without_github_token_fails(wired, capsys, monkeypatch):
     config_path, _, _ = wired
     from scout.github_search import TokenMissingError
 
-    def no_token(config, store, token=None):
+    def no_token(config, store, token=None, **kwargs):
         raise TokenMissingError("set SCOUT_GITHUB_TOKEN")
 
     monkeypatch.setattr(cli.github_search, "search", no_token)
@@ -243,3 +275,82 @@ def test_dotenv_does_not_override_existing(tmp_path, monkeypatch):
     monkeypatch.setenv("SCOUT_GITHUB_TOKEN", "env-token")
     cli._load_dotenv(env_path)
     assert os.environ["SCOUT_GITHUB_TOKEN"] == "env-token"
+
+
+def test_run_writes_markdown_report_in_dry_mode(wired, capsys, tmp_path):
+    config_path, _, _ = wired
+    assert main(["run", "--config", str(config_path)]) == 0
+    reports = list((tmp_path / "reports").glob("*.md"))
+    assert len(reports) == 1
+    name = reports[0].name
+    assert len(name) == len("2026-09-11T05-30-00Z.md")
+    assert name[4] == "-" and name[10] == "T" and name.endswith("Z.md")
+    text = reports[0].read_text()
+    assert "\u2014" not in text
+    assert "## Candidates seen: 1" in text
+    assert "topic:agent-memory: 1" in text
+    assert "new/hot - 9.00 (scout:tier-a)" in text
+    assert "- A: 1" in text
+    assert "report:" in capsys.readouterr().out
+
+
+def test_check_then_file_walks_target_issues_once_and_shares(tmp_path, monkeypatch):
+    from scout.config import load as load_config
+    from scout.store import Store
+    from scout.tiering import TierScore
+
+    config = load_config(write_config(tmp_path))
+    store = Store(config.state.db_path, config.state.candidates_path)
+    candidates = [github_candidate()]
+    store.record_candidates(candidates)
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return [{"title": "candidate: other/repo", "number": 9,
+                     "labels": [{"name": "scout:candidate"}]}]
+
+        def raise_for_status(self):
+            return None
+
+    class CountingSession:
+        def __init__(self):
+            self.issue_walks = 0
+
+        def get(self, url, params=None, headers=None, timeout=None):
+            assert url.endswith("/issues")
+            self.issue_walks += 1
+            return FakeResponse()
+
+    shared = {}
+
+    def fake_load_atlas(config, token=None, session=None, **kwargs):
+        shared["atlas"] = kwargs.get("filed_repos")
+        return AtlasSet()
+
+    def fake_file(config, store, cands, *, apply, token, session=None, **kwargs):
+        shared["file"] = kwargs.get("existing")
+        return []
+
+    monkeypatch.setattr(cli.atlas_mod, "load_atlas", fake_load_atlas)
+    monkeypatch.setattr(cli.issues_mod, "file_candidates", fake_file)
+    monkeypatch.setattr(cli.tiering_mod, "collect_readme_sizes",
+                        lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        cli.tiering_mod, "score_candidate",
+        lambda config, candidate, **kwargs: TierScore(
+            repo=candidate.repo, score=9.0, tier="a", label="scout:tier-a",
+            components={},
+        ),
+    )
+
+    session = CountingSession()
+    outcome = cli._check_then_file(
+        config, store, candidates, apply=False, token="t", session=session
+    )
+    assert session.issue_walks == 1
+    assert shared["atlas"] == {"other/repo": 9}
+    assert shared["file"] == {"other/repo": 9}
+    assert [c.repo for c in outcome.kept] == ["new/hot"]
+    store.close()

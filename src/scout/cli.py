@@ -13,11 +13,14 @@ import json
 import os
 import requests
 import sys
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 from . import atlas as atlas_mod
 from . import github_search, issues as issues_mod, reddit, retract as retract_mod
+from . import report as report_mod
+from . import tiering as tiering_mod
 from .config import Config, load
 from .models import Candidate
 from .store import Store
@@ -102,10 +105,13 @@ def _gather(
     token: str | None,
     *,
     include_pending: bool = False,
+    drops: dict[str, list[str]] | None = None,
 ) -> list[Candidate]:
     candidates: list[Candidate] = []
     if source in ("github", "all"):
-        candidates.extend(github_search.search(config, store, token=token))
+        candidates.extend(
+            github_search.search(config, store, token=token, drops=drops)
+        )
     if source in ("reddit", "all"):
         candidates.extend(reddit.scan(config, store))
     store.record_candidates(candidates)
@@ -120,6 +126,16 @@ def _gather(
     return [*candidates, *pending]
 
 
+@dataclass
+class CheckFileOutcome:
+    """Result of the atlas check, tiering and filing in one pass."""
+
+    kept: list[Candidate]
+    known: dict[str, list[str]]  # skip reason -> repos
+    scores: dict[str, tiering_mod.TierScore]
+    results: list[issues_mod.FiledIssue]
+
+
 def _check_then_file(
     config: Config,
     store: Store,
@@ -127,22 +143,43 @@ def _check_then_file(
     *,
     apply: bool,
     token: str | None,
-) -> tuple[list[Candidate], dict[str, int], list[issues_mod.FiledIssue]]:
-    """Atlas check then issue filing. Returns kept candidates, atlas skip
-    counts per reason, and the per-candidate filing results."""
-    known = atlas_mod.load_atlas(config, token=token)
+    session: requests.Session | None = None,
+) -> CheckFileOutcome:
+    """Atlas check, tiering, then issue filing. The target-repo issue walk
+    runs once here and is shared by the atlas check and filing."""
+    if session is None:
+        session = requests.Session()
+    existing = issues_mod.fetch_existing_issue_repos(
+        session, config, issues_mod._headers(token)
+    )
+    known = atlas_mod.load_atlas(
+        config, token=token, session=session, filed_repos=existing
+    )
     kept: list[Candidate] = []
-    skipped: dict[str, int] = {}
+    known_reasons: dict[str, list[str]] = {}
     for candidate in candidates:
         reason = known.is_known(candidate.repo)
         if reason:
-            skipped[reason] = skipped.get(reason, 0) + 1
+            known_reasons.setdefault(reason, []).append(candidate.repo)
         else:
             kept.append(candidate)
-    results = issues_mod.file_candidates(
-        config, store, kept, apply=apply, token=token
+
+    readme_sizes = tiering_mod.collect_readme_sizes(
+        config, store, kept, token=token, session=session
     )
-    return kept, skipped, results
+    scores = {
+        candidate.repo: tiering_mod.score_candidate(
+            config, candidate, readme_bytes=readme_sizes.get(candidate.repo)
+        )
+        for candidate in kept
+    }
+    results = issues_mod.file_candidates(
+        config, store, kept, apply=apply, token=token, session=session,
+        tiers=scores, existing=existing,
+    )
+    return CheckFileOutcome(
+        kept=kept, known=known_reasons, scores=scores, results=results
+    )
 
 
 def _migrate_history(config: Config, store: Store, token: str | None) -> bool:
@@ -215,24 +252,25 @@ def _cmd_file(args: argparse.Namespace, config: Config, store: Store) -> int:
     if not _migrate_history(config, store, token):
         return 1
     try:
-        _, _, results = _check_then_file(
+        outcome = _check_then_file(
             config, store, candidates, apply=args.apply, token=token
         )
     except issues_mod.TokenMissingError as exc:
         print(f"file: {exc}", file=sys.stderr)
         return 1
-    for result in results:
+    for result in outcome.results:
         if result.issue_number is not None:
             store.mark_history_issue(result.repo, result.issue_number)
-    _print_file_results(results)
+    _print_file_results(outcome.results)
     return 0
 
 
 def _cmd_run(args: argparse.Namespace, config: Config, store: Store) -> int:
     token = _token()
+    drops: dict[str, list[str]] = {}
     try:
         candidates = _gather(
-            config, store, "all", token, include_pending=True
+            config, store, "all", token, include_pending=True, drops=drops
         )
     except github_search.TokenMissingError as exc:
         print(f"run: {exc}", file=sys.stderr)
@@ -240,16 +278,16 @@ def _cmd_run(args: argparse.Namespace, config: Config, store: Store) -> int:
     if not _migrate_history(config, store, token):
         return 1
     try:
-        _, known_skipped, results = _check_then_file(
+        outcome = _check_then_file(
             config, store, candidates, apply=args.apply, token=token
         )
     except issues_mod.TokenMissingError as exc:
         print(f"run: {exc}", file=sys.stderr)
         return 1
 
-    skipped = dict(known_skipped)
+    skipped = {reason: len(repos) for reason, repos in outcome.known.items()}
     filed = 0
-    for result in results:
+    for result in outcome.results:
         if result.status == issues_mod.STATUS_FILED:
             filed += 1
             if result.issue_number is not None:
@@ -265,7 +303,7 @@ def _cmd_run(args: argparse.Namespace, config: Config, store: Store) -> int:
         "ran_at": datetime.now(UTC).isoformat(),
         "apply": bool(args.apply),
         "seen": len(candidates),
-        "known": sum(known_skipped.values()),
+        "known": sum(len(repos) for repos in outcome.known.values()),
         "filed": filed,
         "skipped": skipped,
     }
@@ -274,13 +312,49 @@ def _cmd_run(args: argparse.Namespace, config: Config, store: Store) -> int:
     with log_path.open("a") as fh:
         fh.write(json.dumps(entry) + "\n")
 
+    report = report_mod.RunReport(
+        queries=_query_counts(candidates),
+        seen=len(candidates),
+        known=outcome.known,
+        dropped=_drop_counts(drops, outcome),
+        scores=outcome.scores,
+        candidates={candidate.repo: candidate for candidate in outcome.kept},
+    )
+    report_path = report_mod.write_report(report, config.state.reports_path)
+
     print(f"seen: {entry['seen']}")
     print(f"known: {entry['known']}")
     print(f"filed: {filed}")
     for reason, count in sorted(skipped.items()):
         print(f"skipped ({reason}): {count}")
     print(f"run log: {log_path}")
+    print(f"report: {report_path}")
     return 0
+
+
+def _query_counts(candidates: list[Candidate]) -> dict[str, int]:
+    """Candidates per GitHub search query (reddit candidates carry terms,
+    not queries, so they land outside this count)."""
+    counts: dict[str, int] = {}
+    for candidate in candidates:
+        if candidate.source != "github" or not candidate.matched_terms:
+            continue
+        query = candidate.matched_terms[0]
+        counts[query] = counts.get(query, 0) + 1
+    return counts
+
+
+def _drop_counts(
+    drops: dict[str, list[str]], outcome: CheckFileOutcome
+) -> dict[str, list[str]]:
+    """Drop reasons from the scan plus the tier-C repos held back this run."""
+    counts = {reason: list(repos) for reason, repos in drops.items()}
+    tier_c = sorted(
+        score.repo for score in outcome.scores.values() if score.tier == "c"
+    )
+    if tier_c:
+        counts[tiering_mod.REASON_TIER_C] = tier_c
+    return counts
 
 
 def _cmd_retract(args: argparse.Namespace, config: Config, store: Store) -> int:
