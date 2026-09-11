@@ -125,6 +125,18 @@ class Store:
     def pending_candidates(self) -> list:
         return self.history.pending_candidates() if self.history is not None else []
 
+    def readme_size(self, repo: str) -> int | None:
+        if self.history is None:
+            return None
+        return self.history.readme_size(repo)
+
+    def has_readme_size(self, repo: str) -> bool:
+        return self.history is not None and self.history.has_readme_size(repo)
+
+    def save_readme_size(self, repo: str, size: int | None) -> None:
+        if self.history is not None:
+            self.history.update_readme_size(repo, size)
+
     @property
     def issues_migrated(self) -> bool:
         return self.history is not None and self.history.issues_migrated

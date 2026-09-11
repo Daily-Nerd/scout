@@ -229,3 +229,35 @@ def test_excludes_profile_repos_and_scout_itself(tmp_path):
         assert [c.repo for c in candidates] == ["o/real"]
         assert not store.is_repo_seen("alice/alice")
         assert not store.is_repo_seen("daily-nerd/scout")
+
+
+def test_drops_record_term_gate_profile_and_fork_reasons(tmp_path):
+    page = {"items": [
+        {**_item("o/fork"), "fork": True},
+        _item("alice/alice"),
+        _item("o/travel", "a travel agent booking site"),
+        _item("o/good"),
+    ]}
+    session = FakeSession({("topic:agent-memory", 1): page,
+                           ("agent memory in:name,description", 1): {"items": []}})
+    drops: dict[str, list[str]] = {}
+    with Store(tmp_path / "state.db") as store:
+        candidates = search(load_config(tmp_path), store, token="t",
+                            session=session, sleep=lambda s: None, drops=drops)
+    assert [c.repo for c in candidates] == ["o/good"]
+    assert drops == {
+        "fork or archived": ["o/fork"],
+        "profile repo": ["alice/alice"],
+        "term gate": ["o/travel"],
+    }
+
+
+def test_candidate_carries_topics(tmp_path):
+    page = {"items": [_item("o/topics", "a plain store",
+                            topics=["agents", "ai-memory", "unrelated"])]}
+    session = FakeSession({("topic:agent-memory", 1): page,
+                           ("agent memory in:name,description", 1): {"items": []}})
+    with Store(tmp_path / "state.db") as store:
+        candidates = search(load_config(tmp_path), store, token="t",
+                            session=session, sleep=lambda s: None)
+    assert candidates[0].topics == ["agents", "ai-memory", "unrelated"]

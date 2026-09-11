@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -51,14 +51,17 @@ class History:
 
     def pending_candidates(self) -> list[Candidate]:
         pending: list[Candidate] = []
+        field_names = {field.name for field in fields(Candidate)}
         for row in self.repos.values():
             if row.get("status", "pending") != "pending" or row.get("issue_number"):
                 continue
             latest = row.get("latest")
             if not isinstance(latest, dict):
                 continue
+            payload = {key: value for key, value in latest.items()
+                       if key in field_names}
             try:
-                pending.append(Candidate(**latest))
+                pending.append(Candidate(**payload))
             except TypeError:
                 continue
         return pending
@@ -104,6 +107,28 @@ class History:
 
     def mark_issues_migrated(self) -> None:
         self.issues_migrated = True
+
+    def readme_size(self, repo: str) -> int | None:
+        """Cached README size from the latest payload, or None if unknown."""
+        row = self.repos.get(repo)
+        latest = row.get("latest") if row else None
+        if isinstance(latest, dict):
+            value = latest.get("readme_bytes")
+            if isinstance(value, int):
+                return value
+        return None
+
+    def has_readme_size(self, repo: str) -> bool:
+        """True once the README size was fetched, even if there is no README."""
+        row = self.repos.get(repo)
+        latest = row.get("latest") if row else None
+        return isinstance(latest, dict) and "readme_bytes" in latest
+
+    def update_readme_size(self, repo: str, size: int | None) -> None:
+        row = self.repos.get(repo)
+        latest = row.get("latest") if row else None
+        if isinstance(latest, dict):
+            latest["readme_bytes"] = size
 
     def mark_title_only_rows(self) -> int:
         """Flag repo rows that carry no candidate payload.

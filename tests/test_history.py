@@ -82,3 +82,32 @@ def test_title_only_marking_is_idempotent(tmp_path):
     history.repos["owner/junk"] = {"kind": "repo", "repo": "owner/junk"}
     assert history.mark_title_only_rows() == 1
     assert history.mark_title_only_rows() == 0
+
+
+def test_readme_size_round_trips_through_history(tmp_path):
+    path = tmp_path / "candidates.jsonl"
+    history = History(path)
+    history.record_candidates([candidate(), candidate("owner/noreadme")])
+    history.update_readme_size("alice/memorymesh", 4321)
+    history.update_readme_size("owner/noreadme", None)
+    history.write()
+
+    restored = History(path)
+    assert restored.readme_size("alice/memorymesh") == 4321
+    assert restored.has_readme_size("alice/memorymesh")
+    assert restored.readme_size("owner/noreadme") is None
+    assert restored.has_readme_size("owner/noreadme")
+    assert not restored.has_readme_size("never/seen")
+
+
+def test_pending_candidates_tolerate_extra_payload_keys(tmp_path):
+    """Cached metadata such as readme_bytes must not break reconstruction."""
+    path = tmp_path / "candidates.jsonl"
+    history = History(path)
+    history.record_candidates([candidate()])
+    history.update_readme_size("alice/memorymesh", 4321)
+    history.write()
+
+    restored = History(path)
+    pending = restored.pending_candidates()
+    assert [item.repo for item in pending] == ["alice/memorymesh"]

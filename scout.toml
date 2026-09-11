@@ -44,6 +44,33 @@ label = "scout:candidate"
 request_interval_seconds = 2
 max_rate_limit_retries = 3
 
+[tiering]
+# Deterministic candidate scoring, arithmetic only. The score is the sum of
+# six components, each a weight times a 0..1-ish signal:
+#   stars     weight * min(stars, stars_cap) / stars_cap
+#   recency   weight * max(0, 1 - days_since_push / recency_window_days)
+#   name      weight if a memory-ish term appears in the repo name, else 0
+#   readme    weight * min(readme_bytes, readme_cap_bytes) / readme_cap_bytes
+#   topics    weight * distinct term-list hits across the repo topics
+#   density   weight * fraction of description words containing a term
+# Missing data never errors; it scores 0 for that component. That covers
+# Reddit-sourced candidates (no stars, no pushed_at, no topics) and repos
+# with no README, no description, or a pushed_at that fails to parse.
+# Tiers: score >= tier_a_min files as scout:tier-a, >= tier_b_min as
+# scout:tier-b, anything lower is tier C and is not filed.
+stars_weight = 2.0
+stars_cap = 500
+recency_weight = 4.0
+recency_window_days = 90
+name_weight = 2.0
+readme_weight = 2.0
+readme_cap_bytes = 20000
+topic_weight = 1.0
+density_weight = 3.0
+tier_a_min = 8.0
+tier_b_min = 5.0
+
 [state]
 db_path = "state/scout.db"
 candidates_path = "data/candidates.jsonl"
+reports_path = "reports"

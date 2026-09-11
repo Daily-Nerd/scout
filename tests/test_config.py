@@ -20,6 +20,10 @@ def test_repo_config_loads():
     assert config.issues.target_repo == "Daily-Nerd/scout"
     assert config.issues.label == "scout:candidate"
     assert config.state.candidates_path == Path("data/candidates.jsonl")
+    assert config.state.reports_path == Path("reports")
+    assert config.tiering.stars_cap == 500
+    assert config.tiering.tier_a_min == 8.0
+    assert config.tiering.tier_b_min == 5.0
 
 
 def test_terms_match_is_case_insensitive():
@@ -36,6 +40,8 @@ def test_missing_table_uses_defaults(tmp_path):
     assert config.github.queries == ["topic:x"]
     assert config.reddit.subreddits == []
     assert config.atlas.archive_org == "agent-memory-atlas-archive"
+    assert config.tiering.tier_a_min == 8.0
+    assert config.state.reports_path == Path("reports")
 
 
 def test_non_table_section_raises(tmp_path):

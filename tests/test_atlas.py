@@ -181,6 +181,19 @@ def test_missing_token_skips_issue_check(tmp_path, capsys):
     assert "no token" in capsys.readouterr().err
 
 
+def test_load_atlas_with_prefetched_filed_repos_skips_issue_walk(tmp_path):
+    session = FakeSession()
+    result = load_atlas(
+        load_config(tmp_path), token="t", session=session,
+        fetch_tarball=lambda: build_tarball(FIXTURES),
+        filed_repos=["prefiled/one"],
+    )
+    assert result.is_known("prefiled/one") == REASON_ISSUE
+    assert not any(
+        "/repos/Daily-Nerd/scout/issues" in url for url in session.calls
+    )
+
+
 def test_atlas_set_round_trips_through_pairs():
     original = AtlasSet(reasons={"o/r": REASON_ATLAS, "a/b": REASON_ISSUE})
     restored = AtlasSet.from_pairs(original.to_pairs())

@@ -29,6 +29,7 @@ class Candidate:
     source_url: str  # search hit url, or post permalink
     matched_terms: list[str] = field(default_factory=list)
     description: str = ""
+    topics: list[str] = field(default_factory=list)
     stars: int | None = None
     pushed_at: str | None = None
     license: str | None = None

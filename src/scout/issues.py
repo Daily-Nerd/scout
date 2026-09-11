@@ -19,12 +19,14 @@ from .github_search import TOKEN_ENV, TokenMissingError
 from .models import Candidate, normalize_repo
 from .rate_limit import github_rate_limited, request_with_backoff
 from .store import Store
+from .tiering import REASON_TIER_C, TierScore, component_summary
 
 API = "https://api.github.com"
 STATUS_FILED = "filed"
 STATUS_SKIPPED = "skipped"
 STATUS_DRY_RUN = "dry-run"
 LABEL_COLOR = "1d76db"
+TIER_LABEL_COLORS = {"scout:tier-a": "0e8a16", "scout:tier-b": "1d76db"}
 
 _CANDIDATE_TITLE_RE = re.compile(r"candidate:\s*([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)")
 
@@ -43,8 +45,12 @@ def render_title(candidate: Candidate) -> str:
     return f"candidate: {candidate.repo}"
 
 
-def render_body(candidate: Candidate) -> str:
-    """Plain text issue body. Pure: no IO, no side effects."""
+def render_body(candidate: Candidate, tier: TierScore | None = None) -> str:
+    """Plain text issue body. Pure: no IO, no side effects.
+
+    When a TierScore is passed, the body carries the tier and the score
+    components so a curator can see why the candidate landed where it did.
+    """
     lines = [
         f"Repo: {candidate.html_url or f'https://github.com/{candidate.repo}'}",
         f"Description: {candidate.description or 'none listed'}",
@@ -52,6 +58,9 @@ def render_body(candidate: Candidate) -> str:
         f"Last push: {candidate.pushed_at or 'unknown'}",
         f"License: {candidate.license or 'none detected'}",
     ]
+    if tier is not None:
+        lines.append(f"Tier: {tier.tier.upper()} (score {tier.score:.2f})")
+        lines.append(f"Score components: {component_summary(tier)}")
     if candidate.source == "reddit":
         author = f" by {candidate.author}" if candidate.author else ""
         lines.append(
@@ -78,7 +87,7 @@ def _headers(token: str | None) -> dict[str, str]:
     return headers
 
 
-def _existing_issue_repos(
+def fetch_existing_issue_repos(
     session: requests.Session,
     config: Config,
     headers: dict[str, str],
@@ -131,7 +140,7 @@ def migrate_existing_issues(
         return 0
     if session is None:
         session = requests.Session()
-    found = _existing_issue_repos(
+    found = fetch_existing_issue_repos(
         session, config, _headers(token), sleep=sleep
     )
     for repo, number in found.items():
@@ -145,13 +154,15 @@ def _ensure_label(
     session: requests.Session,
     config: Config,
     headers: dict[str, str],
+    name: str,
+    color: str,
     *,
     sleep=time.sleep,
 ) -> None:
     labels_url = f"{API}/repos/{config.issues.target_repo}/labels"
     response = request_with_backoff(
         lambda: session.get(
-            f"{labels_url}/{config.issues.label}", headers=headers, timeout=30
+            f"{labels_url}/{name}", headers=headers, timeout=30
         ),
         should_retry=github_rate_limited,
         sleep=sleep,
@@ -165,7 +176,7 @@ def _ensure_label(
         lambda: session.post(
             labels_url,
             headers=headers,
-            json={"name": config.issues.label, "color": LABEL_COLOR},
+            json={"name": name, "color": color},
             timeout=30,
         ),
         should_retry=github_rate_limited,
@@ -184,11 +195,17 @@ def file_candidates(
     token: str | None,
     session: requests.Session | None = None,
     sleep=time.sleep,
+    tiers: dict[str, TierScore] | None = None,
+    existing: dict[str, int] | None = None,
 ) -> list[FiledIssue]:
     """Decide and (with apply) create one issue per candidate.
 
     Repos already in the store or found by title search are skipped, so the
-    same repo is never filed twice.
+    same repo is never filed twice. Candidates scored tier C are not filed
+    at all: they stay pending in the history for a later run. When
+    ``existing`` (repo -> issue number) is passed it is trusted as the
+    target-repo scan and no issue walk is done here; callers that also
+    need the map for the atlas check should fetch it once and share it.
     """
     if apply and not token:
         raise TokenMissingError(
@@ -200,16 +217,26 @@ def file_candidates(
     headers = _headers(token)
 
     pending = [c for c in candidates if not store.is_filed(c.repo)]
-    if pending:
-        for repo, number in _existing_issue_repos(
-            session, config, headers, sleep=sleep
-        ).items():
+    if pending and existing is None:
+        existing = fetch_existing_issue_repos(session, config, headers, sleep=sleep)
+    if existing:
+        for repo, number in existing.items():
             store.mark_filed(repo, number)
 
     results: list[FiledIssue] = []
-    label_ready = False
+    labels_ready: set[str] = set()
     last_issue_at = 0.0
     for candidate in candidates:
+        tier = tiers.get(candidate.repo) if tiers else None
+        if tier is not None and tier.tier == "c":
+            results.append(
+                FiledIssue(
+                    repo=candidate.repo,
+                    status=STATUS_SKIPPED,
+                    reason=REASON_TIER_C,
+                )
+            )
+            continue
         if store.is_filed(candidate.repo):
             results.append(
                 FiledIssue(
@@ -221,7 +248,10 @@ def file_candidates(
             )
             continue
         title = render_title(candidate)
-        body = render_body(candidate)
+        body = render_body(candidate, tier)
+        labels = [config.issues.label]
+        if tier is not None:
+            labels.append(tier.label)
         if not apply:
             results.append(
                 FiledIssue(
@@ -232,9 +262,11 @@ def file_candidates(
                 )
             )
             continue
-        if not label_ready:
-            _ensure_label(session, config, headers, sleep=sleep)
-            label_ready = True
+        for label in labels:
+            if label not in labels_ready:
+                color = TIER_LABEL_COLORS.get(label, LABEL_COLOR)
+                _ensure_label(session, config, headers, label, color, sleep=sleep)
+                labels_ready.add(label)
         wait = config.issues.request_interval_seconds - (
             time.monotonic() - last_issue_at
         )
@@ -247,7 +279,7 @@ def file_candidates(
                 json={
                     "title": title,
                     "body": body,
-                    "labels": [config.issues.label],
+                    "labels": labels,
                 },
                 timeout=30,
             ),

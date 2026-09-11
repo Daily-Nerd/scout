@@ -25,6 +25,12 @@ TOKEN_ENV = "SCOUT_GITHUB_TOKEN"
 PER_PAGE = 100
 PAGE_PAUSE_SECONDS = 2.0
 
+DROP_FORK = "fork or archived"
+DROP_PROFILE = "profile repo"
+DROP_SELF = "scout itself"
+DROP_TERM_GATE = "term gate"
+DROP_UNPARSEABLE = "unparseable name"
+
 
 class TokenMissingError(RuntimeError):
     """Raised when the GitHub source runs without a token."""
@@ -40,35 +46,45 @@ def _headers(token: str) -> dict[str, str]:
 
 def _to_candidate(
     config: Config, item: dict, query: str
-) -> Candidate | None:
+) -> tuple[Candidate | None, str | None]:
+    """Map one search hit to a candidate, or (None, drop reason)."""
     if item.get("fork") or item.get("archived"):
-        return None
+        return None, DROP_FORK
     html_url = item.get("html_url", "")
     try:
         repo = normalize_repo(item.get("full_name") or html_url)
     except ValueError:
-        return None
+        return None, DROP_UNPARSEABLE
     owner, _, name = repo.partition("/")
     if name == owner:  # owner/repo profile README
-        return None
+        return None, DROP_PROFILE
     if repo == normalize_repo(config.issues.target_repo):
-        return None
-    topics = " ".join(item.get("topics") or [])
-    matched = config.terms.gate(f"{name} {item.get('description') or ''} {topics}")
+        return None, DROP_SELF
+    topics = item.get("topics") or []
+    matched = config.terms.gate(f"{name} {item.get('description') or ''} {' '.join(topics)}")
     if matched is None:
-        return None
+        return None, DROP_TERM_GATE
     license_info = item.get("license") or {}
-    return Candidate(
-        repo=repo,
-        source="github",
-        source_url=html_url,
-        matched_terms=[query],
-        description=item.get("description") or "",
-        stars=item.get("stargazers_count"),
-        pushed_at=item.get("pushed_at"),
-        license=license_info.get("spdx_id") or None,
-        html_url=html_url or None,
+    return (
+        Candidate(
+            repo=repo,
+            source="github",
+            source_url=html_url,
+            matched_terms=[query],
+            description=item.get("description") or "",
+            topics=list(topics),
+            stars=item.get("stargazers_count"),
+            pushed_at=item.get("pushed_at"),
+            license=license_info.get("spdx_id") or None,
+            html_url=html_url or None,
+        ),
+        None,
     )
+
+
+def _record_drop(drops: dict[str, list[str]] | None, reason: str, repo: str) -> None:
+    if drops is not None:
+        drops.setdefault(reason, []).append(repo)
 
 
 def search(
@@ -78,12 +94,15 @@ def search(
     token: str | None = None,
     session: requests.Session | None = None,
     sleep=time.sleep,
+    drops: dict[str, list[str]] | None = None,
 ) -> list[Candidate]:
     """Run every configured query and return unseen repos as candidates.
 
     Paginates with per_page=100 and pauses between pages to stay inside the
     search rate limit. Repos already in the store are treated as ingested and
-    skipped; new repos are marked seen as they are collected.
+    skipped; new repos are marked seen as they are collected. Hits filtered
+    out by the term gate or the exclusion rules are recorded in ``drops``,
+    reason to repo list, when a dict is passed.
     """
     if token is None:
         token = os.environ.get(TOKEN_ENV)
@@ -123,8 +142,14 @@ def search(
 
             unseen_on_page = 0
             for item in items:
-                candidate = _to_candidate(config, item, query)
-                if candidate is None or store.is_repo_seen(candidate.repo):
+                candidate, drop = _to_candidate(config, item, query)
+                if candidate is None:
+                    _record_drop(
+                        drops, drop or DROP_UNPARSEABLE,
+                        item.get("full_name") or item.get("html_url") or "unknown",
+                    )
+                    continue
+                if store.is_repo_seen(candidate.repo):
                     continue
                 store.mark_repo_seen(candidate.repo, "github")
                 candidates.append(candidate)

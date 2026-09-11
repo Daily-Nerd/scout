@@ -14,6 +14,7 @@ from scout.issues import (
 )
 from scout.models import Candidate
 from scout.store import Store
+from scout.tiering import TierScore
 
 DEFAULT_CONFIG = """
 [github]
@@ -78,6 +79,18 @@ def github_candidate() -> Candidate:
         license=None,
         html_url="https://github.com/bob/context-store",
     )
+
+
+def tier(repo: str, name: str, score: float, tier_name: str) -> TierScore:
+    return TierScore(
+        repo=repo, score=score, tier=tier_name,
+        label=f"scout:tier-{tier_name}",
+        components={"stars": score},
+    )
+
+
+def tiers_for(*candidates: Candidate, tier_name: str = "a", score: float = 9.0):
+    return {c.repo: tier(c.repo, c.repo, score, tier_name) for c in candidates}
 
 
 class FakeResponse:
@@ -171,6 +184,81 @@ def test_dry_run_returns_exact_title_and_body_without_writing(tmp_path):
         assert result.title == "candidate: alice/memorymesh"
         assert result.body == render_body(reddit_candidate())
         assert not store.is_filed("alice/memorymesh")
+
+
+def test_apply_files_with_tier_label_and_score_in_body(tmp_path):
+    session = FakeSession()
+    candidate = reddit_candidate()
+    with Store(tmp_path / "state.db") as store:
+        results = file_candidates(
+            load_config(tmp_path), store, [candidate],
+            apply=True, token="t", session=session,
+            tiers=tiers_for(candidate),
+        )
+        assert results[0].status == STATUS_FILED
+        assert results[0].issue_number == 100
+        assert store.is_filed("alice/memorymesh")
+        assert store.filed_issue_number("alice/memorymesh") == 100
+    assert len(session.posts) == 1
+    url, payload = session.posts[0]
+    assert url == "https://api.github.com/repos/Daily-Nerd/scout/issues"
+    assert payload["title"] == "candidate: alice/memorymesh"
+    assert payload["labels"] == ["scout:candidate", "scout:tier-a"]
+    assert "Tier: A (score 9.00)" in payload["body"]
+    assert "Score components: stars 9.00" in payload["body"]
+    assert session.label_posts == 2  # candidate label plus tier label
+
+
+def test_apply_reuses_existing_label(tmp_path):
+    session = FakeSession(label_exists=True)
+    candidate = reddit_candidate()
+    with Store(tmp_path / "state.db") as store:
+        file_candidates(load_config(tmp_path), store, [candidate],
+                        apply=True, token="t", session=session,
+                        tiers=tiers_for(candidate))
+    assert session.label_posts == 0
+
+
+def test_tier_c_candidates_are_not_filed(tmp_path):
+    session = FakeSession()
+    candidate = reddit_candidate()
+    with Store(tmp_path / "state.db") as store:
+        results = file_candidates(
+            load_config(tmp_path), store, [candidate],
+            apply=True, token="t", session=session,
+            tiers=tiers_for(candidate, tier_name="c", score=1.0),
+        )
+    assert results[0].status == STATUS_SKIPPED
+    assert results[0].reason == "tier C"
+    assert session.posts == []
+
+
+def test_existing_issue_map_is_trusted_without_a_second_walk(tmp_path):
+    """Passing existing skips the target-repo walk entirely."""
+    class ExplodingSession(FakeSession):
+        def get(self, url, params=None, headers=None, timeout=None):
+            if url.endswith("/issues"):
+                raise AssertionError("issue walk ran despite shared map")
+            return super().get(url, params=params, headers=headers, timeout=timeout)
+
+    candidate = reddit_candidate()
+    with Store(tmp_path / "state.db") as store:
+        results = file_candidates(
+            load_config(tmp_path), store, [candidate],
+            apply=True, token="t", session=ExplodingSession(),
+            tiers=tiers_for(candidate),
+            existing={"alice/memorymesh": 55},
+        )
+    assert results[0].status == STATUS_SKIPPED
+    assert results[0].issue_number == 55
+
+
+def test_render_body_with_tier_shows_components():
+    candidate = reddit_candidate()
+    body = render_body(candidate, tier("alice/memorymesh", "x", 7.25, "b"))
+    assert "Tier: B (score 7.25)" in body
+    assert "Score components:" in body
+    assert "\u2014" not in body
 
 
 def test_apply_files_and_marks_store(tmp_path):

@@ -63,9 +63,25 @@ class IssuesConfig:
 
 
 @dataclass
+class TieringConfig:
+    stars_weight: float = 2.0
+    stars_cap: int = 500
+    recency_weight: float = 4.0
+    recency_window_days: int = 90
+    name_weight: float = 2.0
+    readme_weight: float = 2.0
+    readme_cap_bytes: int = 20000
+    topic_weight: float = 1.0
+    density_weight: float = 3.0
+    tier_a_min: float = 8.0
+    tier_b_min: float = 5.0
+
+
+@dataclass
 class StateConfig:
     db_path: Path = Path("state/scout.db")
     candidates_path: Path = Path("data/candidates.jsonl")
+    reports_path: Path = Path("reports")
 
 
 @dataclass
@@ -75,6 +91,7 @@ class Config:
     terms: TermConfig
     atlas: AtlasConfig
     issues: IssuesConfig
+    tiering: TieringConfig
     state: StateConfig
     path: Path
 
@@ -99,6 +116,7 @@ def load(path: str | Path) -> Config:
     terms = _section(data, "terms")
     atlas = _section(data, "atlas")
     issues = _section(data, "issues")
+    tiering = _section(data, "tiering")
     state = _section(data, "state")
 
     return Config(
@@ -127,11 +145,25 @@ def load(path: str | Path) -> Config:
             request_interval_seconds=float(issues.get("request_interval_seconds", 2)),
             max_rate_limit_retries=int(issues.get("max_rate_limit_retries", 3)),
         ),
+        tiering=TieringConfig(
+            stars_weight=float(tiering.get("stars_weight", 2)),
+            stars_cap=int(tiering.get("stars_cap", 500)),
+            recency_weight=float(tiering.get("recency_weight", 4)),
+            recency_window_days=int(tiering.get("recency_window_days", 90)),
+            name_weight=float(tiering.get("name_weight", 2)),
+            readme_weight=float(tiering.get("readme_weight", 2)),
+            readme_cap_bytes=int(tiering.get("readme_cap_bytes", 20000)),
+            topic_weight=float(tiering.get("topic_weight", 1)),
+            density_weight=float(tiering.get("density_weight", 3)),
+            tier_a_min=float(tiering.get("tier_a_min", 8)),
+            tier_b_min=float(tiering.get("tier_b_min", 5)),
+        ),
         state=StateConfig(
             db_path=Path(state.get("db_path", "state/scout.db")),
             candidates_path=Path(
                 state.get("candidates_path", "data/candidates.jsonl")
             ),
+            reports_path=Path(state.get("reports_path", "reports")),
         ),
         path=path,
     )
