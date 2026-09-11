@@ -63,8 +63,12 @@ Anything over the cap is held rather than dropped: it stays pending in the
 history and gets another chance on the next run, still ranked by score.
 
 A run also refreshes stale rows before it ends. `[refresh] days` sets how
-old a row's metadata can get before it needs a fresh look, and `[refresh]
-max_per_run` caps how many rows get refreshed per run, oldest first. A
+old a row's metadata can get before it needs a fresh look, measured from
+the last time that metadata was fetched (a GitHub search hit or an earlier
+refresh), not from when the row was last scored, since scoring reruns
+every run from the cached payload. `[refresh] max_per_run` caps how many
+rows get refreshed per run, oldest fetch first, with never-fetched rows
+(a Reddit hit, a row rebuilt from an issue title) ahead of everything. A
 refreshed row gets a new GET to GitHub, a forced README and git tree fetch,
 and a rescore. If that rescore lands on a different tier and the row
 already has a filed issue, refresh swaps the tier label on that issue, but
@@ -76,17 +80,22 @@ relabel. Refresh never files a new issue.
 Each repo scout has seen gets one row in `data/candidates.jsonl`, marked
 `kind: repo`; the file also carries `kind: post` rows for Reddit posts
 already checked and one `kind: meta` row for internal bookkeeping. A repo
-row's top-level fields, in the order they appear, are `kind`, always `repo`
-here; `repo`, the `owner/name`; `first_seen_at` and `last_seen_at`, when
-scout first and most recently saw it; `sources`, which scans found it;
-`source_urls`, the source URL or URLs that led to it; and `status`, the
-legacy `pending` or `filed` value kept so older readers that predate
-`discovery` still work. `latest` holds the last candidate payload scout
-collected, plus the cached `readme_bytes`, `tree_tests`, `tree_source_files`
-and `tree_fetched_at` signals. `issue_number` is the GitHub issue number
-once one exists, and `title_only` is true for a row rebuilt from an issue
-title with no candidate payload behind it. `discovery` records what scout
-did with the repo: `seen`, `filed`, `retracted` or `title_only`.
+row's top-level fields, listed here by meaning (the file writes keys
+sorted), are `kind`, always `repo` here; `repo`, the `owner/name`;
+`first_seen_at` and `last_seen_at`, when scout first and most recently saw
+it; `sources`, which scans found it; `source_urls`, the source URL or URLs
+that led to it; and `status`, the legacy `pending` or `filed` value kept so
+older readers that predate `discovery` still work. `latest` holds the last
+candidate payload scout collected, plus the cached `readme_bytes` (0 when
+the repo has no README; a failed fetch caches nothing), `tree_tests`,
+`tree_source_files` and `tree_fetched_at` signals, and `fetched_at`, when
+that payload's repo metadata was last fetched from GitHub; a Reddit hit has
+no `fetched_at` until refresh fills it in. `issue_number` is the GitHub
+issue number once one exists. `title_only` marks a row that was rebuilt
+from an issue title rather than a scan, and stays true even after refresh
+fills in `latest`, so a reader can still tell where the row came from.
+`discovery` records what scout did with the repo: `seen`, `filed`,
+`retracted` or `title_only`.
 `assessment` records what the score said: `none`, `tier-a`, `tier-b`,
 `tier-c` or `atlas-known`. `score` and `tier` are the numeric total and the
 tier it produced. `components` holds one entry per scoring component
