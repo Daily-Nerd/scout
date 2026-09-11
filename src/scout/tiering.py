@@ -326,6 +326,7 @@ def tree_signals_from_payload(
     """
     has_tests = False
     source_file_count = 0
+    lowered_extensions = {extension.lower() for extension in source_extensions}
     for item in payload.get("tree") or []:
         path = item.get("path") or ""
         if not path:
@@ -342,8 +343,8 @@ def tree_signals_from_payload(
         if _TEST_BASENAME_RE.match(basename):
             has_tests = True
         if len(segments) <= 2 and "." in basename:
-            extension = "." + basename.rpartition(".")[2]
-            if extension in source_extensions:
+            extension = "." + basename.rpartition(".")[2].lower()
+            if extension in lowered_extensions:
                 source_file_count += 1
     return has_tests, source_file_count
 

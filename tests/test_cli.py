@@ -365,6 +365,51 @@ def test_check_then_file_walks_target_issues_once_and_shares(tmp_path, monkeypat
     store.close()
 
 
+def test_check_then_file_passes_tree_signals_into_score_candidate(
+    tmp_path, monkeypatch
+):
+    """A repo collect_tree_signals has data for must reach score_candidate
+    as (tree_tests, tree_source_files); a repo missing from that map must
+    reach it as (None, None), not silently dropped or mixed up."""
+    from scout.config import load as load_config
+    from scout.store import Store
+    from scout.tiering import TierScore
+
+    config = load_config(write_config(tmp_path))
+    store = Store(config.state.db_path, config.state.candidates_path)
+    candidates = [github_candidate(), github_candidate(repo="owner/notree")]
+    store.record_candidates(candidates)
+
+    monkeypatch.setattr(cli.atlas_mod, "load_atlas", lambda *a, **k: AtlasSet())
+    monkeypatch.setattr(cli.issues_mod, "file_candidates", lambda *a, **k: [])
+    monkeypatch.setattr(
+        cli.issues_mod, "fetch_existing_issue_repos", lambda *a, **k: {}
+    )
+    monkeypatch.setattr(cli.tiering_mod, "collect_readme_sizes", lambda *a, **k: {})
+    monkeypatch.setattr(
+        cli.tiering_mod, "collect_tree_signals",
+        lambda *a, **k: {"new/hot": (True, 12)},
+    )
+
+    received: dict[str, tuple] = {}
+
+    def recording_score(config, candidate, *, readme_bytes=None,
+                          tree_tests=None, tree_source_files=None, now=None):
+        received[candidate.repo] = (tree_tests, tree_source_files)
+        return TierScore(
+            repo=candidate.repo, score=1.0, tier="c", label="scout:tier-c",
+            components={},
+        )
+
+    monkeypatch.setattr(cli.tiering_mod, "score_candidate", recording_score)
+
+    cli._check_then_file(config, store, candidates, apply=False, token="t")
+
+    assert received["new/hot"] == (True, 12)
+    assert received["owner/notree"] == (None, None)
+    store.close()
+
+
 def test_run_dry_mode_persists_scores_and_known_repos(wired, tmp_path):
     config_path, candidates, _ = wired
     candidates.append(

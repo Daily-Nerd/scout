@@ -435,6 +435,12 @@ def test_tree_signals_top_two_levels_only_count_as_source():
     assert source_files == 2
 
 
+def test_tree_signals_extension_match_is_case_insensitive():
+    payload = {"tree": [{"path": "MAIN.PY", "type": "blob"}], "truncated": False}
+    _, source_files = tree_signals_from_payload(payload, SOURCE_EXTENSIONS)
+    assert source_files == 1
+
+
 def test_tree_signals_counts_can_exceed_source_cap():
     payload = {
         "tree": [{"path": f"file{i}.py", "type": "blob"} for i in range(45)],
