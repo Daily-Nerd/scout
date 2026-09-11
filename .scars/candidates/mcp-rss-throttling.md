@@ -3,7 +3,7 @@ type: fence
 title: r/mcp RSS throttles anonymous clients on first contact; keep it last in the subreddit list
 severity: medium
 confidence: 0.9
-authors: ["kibukx"]
+authors: ["kimi-code"]
 anchors:
   - path: scout.toml
   - pattern: "subreddits"
