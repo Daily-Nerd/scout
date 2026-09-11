@@ -65,6 +65,21 @@ def _token() -> str | None:
     return os.environ.get(TOKEN_ENV) or None
 
 
+def _load_dotenv(path: Path) -> None:
+    """Fill missing environment variables from a .env file, if present."""
+    if not path.is_file():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
 def _gather(
     config: Config, store: Store, source: str, token: str | None
 ) -> list[Candidate]:
@@ -210,6 +225,7 @@ def _cmd_run(args: argparse.Namespace, config: Config, store: Store) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    _load_dotenv(args.config.parent / ".env")
     config = load(args.config)  # fail early on a broken config file
 
     with Store(config.state.db_path) as store:

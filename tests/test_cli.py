@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -192,3 +193,29 @@ def test_run_apply_files_and_counts_skips(wired, capsys, tmp_path, monkeypatch):
     assert entry["filed"] == 1
     assert entry["known"] == 1
     assert entry["skipped"] == {"already in the atlas": 1}
+
+
+def test_dotenv_fills_missing_token(tmp_path):
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        '# local token\nSCOUT_GITHUB_TOKEN=file-token\nQUOTED=" spaced "\n'
+    )
+    sentinel = os.environ.get("SCOUT_GITHUB_TOKEN")
+    os.environ.pop("SCOUT_GITHUB_TOKEN", None)
+    try:
+        cli._load_dotenv(env_path)
+        assert os.environ["SCOUT_GITHUB_TOKEN"] == "file-token"
+        assert os.environ["QUOTED"] == " spaced "
+    finally:
+        os.environ.pop("SCOUT_GITHUB_TOKEN", None)
+        os.environ.pop("QUOTED", None)
+        if sentinel is not None:
+            os.environ["SCOUT_GITHUB_TOKEN"] = sentinel
+
+
+def test_dotenv_does_not_override_existing(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text("SCOUT_GITHUB_TOKEN=file-token\n")
+    monkeypatch.setenv("SCOUT_GITHUB_TOKEN", "env-token")
+    cli._load_dotenv(env_path)
+    assert os.environ["SCOUT_GITHUB_TOKEN"] == "env-token"
