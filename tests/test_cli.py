@@ -35,12 +35,16 @@ label = "scout:candidate"
 
 [state]
 db_path = "{db_path}"
+candidates_path = "{history_path}"
 """
 
 
 def write_config(tmp_path) -> object:
     path = tmp_path / "scout.toml"
-    path.write_text(CONFIG_TEMPLATE.format(db_path=tmp_path / "state" / "scout.db"))
+    path.write_text(CONFIG_TEMPLATE.format(
+        db_path=tmp_path / "state" / "scout.db",
+        history_path=tmp_path / "data" / "candidates.jsonl",
+    ))
     return path
 
 
@@ -96,6 +100,7 @@ def wired(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.reddit, "scan", fake_reddit_scan)
     monkeypatch.setattr(cli.atlas_mod, "load_atlas", fake_load_atlas)
     monkeypatch.setattr(cli.issues_mod, "file_candidates", fake_file)
+    monkeypatch.setattr(cli.issues_mod, "migrate_existing_issues", lambda *args: 0)
     monkeypatch.delenv("SCOUT_GITHUB_TOKEN", raising=False)
     return config_path, candidates, calls
 

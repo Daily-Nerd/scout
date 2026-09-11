@@ -32,3 +32,15 @@ def test_filed_issues(tmp_path):
         store.mark_filed("owner/repo", 42)
         assert store.is_filed("owner/repo")
         assert store.filed_issue_number("owner/repo") == 42
+
+
+def test_history_survives_a_new_runner_store(tmp_path):
+    state = tmp_path / "state.db"
+    history = tmp_path / "data" / "candidates.jsonl"
+    with Store(state, history) as store:
+        store.mark_post_seen("t3_abc", "reddit")
+        store.mark_repo_seen("owner/repo", "github")
+
+    with Store(tmp_path / "fresh-run.db", history) as store:
+        assert store.is_post_seen("t3_abc")
+        assert store.is_repo_seen("owner/repo")

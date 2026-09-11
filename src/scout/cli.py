@@ -1,9 +1,9 @@
 """scout command line interface.
 
 Every subcommand is a dry run unless --apply is passed, and the only
-command that ever writes to GitHub is what --apply gates. Each of check,
-file and run re-scans the sources on purpose: the volumes are small and
-the store keeps reruns idempotent.
+command that ever writes to GitHub is what --apply gates. Discovery state is
+persisted separately from the disposable local SQLite cache, so check, file
+and run can reuse pending candidates without rediscovering them.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import requests
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -81,14 +82,28 @@ def _load_dotenv(path: Path) -> None:
 
 
 def _gather(
-    config: Config, store: Store, source: str, token: str | None
+    config: Config,
+    store: Store,
+    source: str,
+    token: str | None,
+    *,
+    include_pending: bool = False,
 ) -> list[Candidate]:
     candidates: list[Candidate] = []
     if source in ("github", "all"):
         candidates.extend(github_search.search(config, store, token=token))
     if source in ("reddit", "all"):
         candidates.extend(reddit.scan(config, store))
-    return candidates
+    store.record_candidates(candidates)
+    if not include_pending:
+        return candidates
+    known_repos = {candidate.repo for candidate in candidates}
+    pending = [
+        candidate
+        for candidate in store.pending_candidates()
+        if candidate.repo not in known_repos
+    ]
+    return [*candidates, *pending]
 
 
 def _check_then_file(
@@ -114,6 +129,18 @@ def _check_then_file(
         config, store, kept, apply=apply, token=token
     )
     return kept, skipped, results
+
+
+def _migrate_history(config: Config, store: Store, token: str | None) -> bool:
+    if not token or store.issues_migrated:
+        return True
+    try:
+        imported = issues_mod.migrate_existing_issues(config, store, token)
+    except requests.RequestException as exc:
+        print(f"history migration failed: {exc}", file=sys.stderr)
+        return False
+    print(f"history: imported {imported} existing candidate issues", file=sys.stderr)
+    return True
 
 
 def _print_file_results(results: list[issues_mod.FiledIssue]) -> None:
@@ -143,8 +170,12 @@ def _cmd_scan(args: argparse.Namespace, config: Config, store: Store) -> int:
 
 
 def _cmd_check(args: argparse.Namespace, config: Config, store: Store) -> int:
+    if not _migrate_history(config, store, _token()):
+        return 1
     try:
-        candidates = _gather(config, store, "all", _token())
+        candidates = _gather(
+            config, store, "all", _token(), include_pending=True
+        )
     except github_search.TokenMissingError as exc:
         print(f"check: {exc}", file=sys.stderr)
         return 1
@@ -160,8 +191,12 @@ def _cmd_check(args: argparse.Namespace, config: Config, store: Store) -> int:
 
 def _cmd_file(args: argparse.Namespace, config: Config, store: Store) -> int:
     token = _token()
+    if not _migrate_history(config, store, token):
+        return 1
     try:
-        candidates = _gather(config, store, "all", token)
+        candidates = _gather(
+            config, store, "all", token, include_pending=True
+        )
     except github_search.TokenMissingError as exc:
         print(f"file: {exc}", file=sys.stderr)
         return 1
@@ -172,14 +207,21 @@ def _cmd_file(args: argparse.Namespace, config: Config, store: Store) -> int:
     except issues_mod.TokenMissingError as exc:
         print(f"file: {exc}", file=sys.stderr)
         return 1
+    for result in results:
+        if result.issue_number is not None:
+            store.mark_history_issue(result.repo, result.issue_number)
     _print_file_results(results)
     return 0
 
 
 def _cmd_run(args: argparse.Namespace, config: Config, store: Store) -> int:
     token = _token()
+    if not _migrate_history(config, store, token):
+        return 1
     try:
-        candidates = _gather(config, store, "all", token)
+        candidates = _gather(
+            config, store, "all", token, include_pending=True
+        )
     except github_search.TokenMissingError as exc:
         print(f"run: {exc}", file=sys.stderr)
         return 1
@@ -196,8 +238,12 @@ def _cmd_run(args: argparse.Namespace, config: Config, store: Store) -> int:
     for result in results:
         if result.status == issues_mod.STATUS_FILED:
             filed += 1
+            if result.issue_number is not None:
+                store.mark_history_issue(result.repo, result.issue_number)
             print(f"filed {result.repo} -> issue #{result.issue_number}")
         elif result.status == issues_mod.STATUS_SKIPPED:
+            if result.issue_number is not None:
+                store.mark_history_issue(result.repo, result.issue_number)
             reason = result.reason or "skipped"
             skipped[reason] = skipped.get(reason, 0) + 1
 
@@ -228,7 +274,7 @@ def main(argv: list[str] | None = None) -> int:
     _load_dotenv(args.config.parent / ".env")
     config = load(args.config)  # fail early on a broken config file
 
-    with Store(config.state.db_path) as store:
+    with Store(config.state.db_path, config.state.candidates_path) as store:
         if args.command == "scan":
             return _cmd_scan(args, config, store)
         if args.command == "check":

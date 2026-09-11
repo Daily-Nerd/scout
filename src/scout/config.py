@@ -55,6 +55,7 @@ class IssuesConfig:
 @dataclass
 class StateConfig:
     db_path: Path = Path("state/scout.db")
+    candidates_path: Path = Path("data/candidates.jsonl")
 
 
 @dataclass
@@ -116,6 +117,11 @@ def load(path: str | Path) -> Config:
             request_interval_seconds=float(issues.get("request_interval_seconds", 1)),
             max_rate_limit_retries=int(issues.get("max_rate_limit_retries", 3)),
         ),
-        state=StateConfig(db_path=Path(state.get("db_path", "state/scout.db"))),
+        state=StateConfig(
+            db_path=Path(state.get("db_path", "state/scout.db")),
+            candidates_path=Path(
+                state.get("candidates_path", "data/candidates.jsonl")
+            ),
+        ),
         path=path,
     )

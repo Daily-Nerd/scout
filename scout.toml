@@ -43,3 +43,4 @@ max_rate_limit_retries = 3
 
 [state]
 db_path = "state/scout.db"
+candidates_path = "data/candidates.jsonl"

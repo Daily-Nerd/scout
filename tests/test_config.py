@@ -19,6 +19,7 @@ def test_repo_config_loads():
     assert config.atlas.repo == "neoneye/agent-memory-atlas"
     assert config.issues.target_repo == "Daily-Nerd/scout"
     assert config.issues.label == "scout:candidate"
+    assert config.state.candidates_path == Path("data/candidates.jsonl")
 
 
 def test_terms_match_is_case_insensitive():

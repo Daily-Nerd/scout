@@ -12,8 +12,12 @@ on:
         default: false
 
 permissions:
-  contents: read
+  contents: write
   issues: write
+
+concurrency:
+  group: scout
+  cancel-in-progress: false
 
 jobs:
   scout:
@@ -47,3 +51,18 @@ jobs:
           else
             uv run scout run
           fi
+
+      - name: Persist scout history
+        if: always()
+        run: |
+          if [ ! -f data/candidates.jsonl ]; then
+            exit 0
+          fi
+          git add data/candidates.jsonl
+          if git diff --cached --quiet -- data/candidates.jsonl; then
+            exit 0
+          fi
+          git config user.name "scout-notary[bot]"
+          git config user.email "4904018+scout-notary[bot]@users.noreply.github.com"
+          git commit -m "chore: update scout candidate history"
+          git push origin HEAD:main

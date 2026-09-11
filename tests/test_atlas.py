@@ -80,7 +80,7 @@ class FakeResponse:
 
 
 class FakeSession:
-    """Routes the archive org and issue search calls."""
+    """Routes the archive org and repository issue calls."""
 
     def __init__(self, fail_on_call: bool = False):
         self.fail_on_call = fail_on_call
@@ -96,13 +96,13 @@ class FakeSession:
                 {"name": "legacy--old-mem"},
                 {"name": "not-a-fork-name"},
             ])
-        if "/search/issues" in url:
+        if "/repos/Daily-Nerd/scout/issues" in url:
             assert headers.get("Authorization") == "Bearer t"
-            return FakeResponse(payload={"items": [
-                {"title": "candidate: filed/already"},
-                {"title": "candidate: Another/One"},
+            return FakeResponse(payload=[
+                {"title": "candidate: filed/already", "labels": [{"name": "scout:candidate"}]},
+                {"title": "candidate: Another/One", "labels": [{"name": "scout:candidate"}]},
                 {"title": "unrelated discussion"},
-            ]})
+            ])
         raise AssertionError(f"unexpected url: {url}")
 
 

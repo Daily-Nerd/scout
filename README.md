@@ -40,3 +40,11 @@ summary to a local log:
 On macOS you can also use a launchd plist with the same command on a 6 hour
 interval. Either way, keep `--apply` off the command line until you want the
 issues to be created, and remember the run log lands in `state/run.log`.
+
+Discovery history is persisted in `data/candidates.jsonl`. The local SQLite
+database remains disposable runner state; the JSONL index is the durable record
+used by scheduled runs to avoid reprocessing the same repos and Reddit posts.
+On the first token-authenticated run, Scout imports existing
+`scout:candidate` issues into this index. That migration is marked complete
+only after every issue page succeeds; a failed migration aborts the run and is
+retried on the next execution.

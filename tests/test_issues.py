@@ -103,6 +103,17 @@ class FakeSession:
         self.label_posts = 0
 
     def get(self, url, params=None, headers=None, timeout=None):
+        if url.endswith("/issues"):
+            items = [
+                {
+                    **item,
+                    "labels": item.get(
+                        "labels", [{"name": "scout:candidate"}]
+                    ),
+                }
+                for item in self.search_items
+            ]
+            return FakeResponse(payload=items)
         if "/search/issues" in url:
             return FakeResponse(payload={"items": self.search_items})
         if "/labels/" in url:

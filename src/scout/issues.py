@@ -1,8 +1,8 @@
 """Issue filing: one GitHub issue per new candidate.
 
 The body renderer is pure text and unit tested on its own. Filing is
-idempotent on two levels: the local store of filed repos and a title search
-of existing issues in the target repo. Without --apply nothing is created.
+idempotent on two levels: the local store of filed repos and a paginated
+scan of existing issues in the target repo. Without --apply nothing is created.
 """
 
 from __future__ import annotations
@@ -86,31 +86,59 @@ def _existing_issue_repos(
     sleep=time.sleep,
 ) -> dict[str, int]:
     """Repo -> issue number for every candidate issue in the target repo."""
-    query = (
-        f'repo:{config.issues.target_repo} '
-        f'label:"{config.issues.label}" in:title "candidate:"'
-    )
-    response = request_with_backoff(
-        lambda: session.get(
-            f"{API}/search/issues",
-            params={"q": query, "per_page": 100},
-            headers=headers,
-            timeout=30,
-        ),
-        should_retry=github_rate_limited,
-        sleep=sleep,
-        max_retries=config.issues.max_rate_limit_retries,
-    )
-    response.raise_for_status()
     found: dict[str, int] = {}
-    for item in response.json().get("items", []):
-        match = _CANDIDATE_TITLE_RE.search(item.get("title", ""))
-        if match:
-            try:
-                found[normalize_repo(match.group(1))] = item["number"]
-            except (ValueError, KeyError):
+    for page in range(1, 101):
+        response = request_with_backoff(
+            lambda: session.get(
+                f"{API}/repos/{config.issues.target_repo}/issues",
+                params={"state": "all", "per_page": 100, "page": page},
+                headers=headers,
+                timeout=30,
+            ),
+            should_retry=github_rate_limited,
+            sleep=sleep,
+            max_retries=config.issues.max_rate_limit_retries,
+        )
+        response.raise_for_status()
+        items = response.json()
+        for item in items:
+            if item.get("pull_request"):
                 continue
+            labels = {label.get("name") for label in item.get("labels", [])}
+            if config.issues.label not in labels:
+                continue
+            match = _CANDIDATE_TITLE_RE.search(item.get("title", ""))
+            if match:
+                try:
+                    found[normalize_repo(match.group(1))] = item["number"]
+                except (ValueError, KeyError):
+                    continue
+        if len(items) < 100:
+            return found
     return found
+
+
+def migrate_existing_issues(
+    config: Config,
+    store: Store,
+    token: str,
+    *,
+    session: requests.Session | None = None,
+    sleep=time.sleep,
+) -> int:
+    """Import existing candidate issues once so a fresh runner starts clean."""
+    if store.issues_migrated:
+        return 0
+    if session is None:
+        session = requests.Session()
+    found = _existing_issue_repos(
+        session, config, _headers(token), sleep=sleep
+    )
+    for repo, number in found.items():
+        store.mark_filed(repo, number)
+        store.mark_history_issue(repo, number)
+    store.mark_issues_migrated()
+    return len(found)
 
 
 def _ensure_label(

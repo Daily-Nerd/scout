@@ -154,28 +154,33 @@ def _fetch_filed_repos(
     session: requests.Session, config: Config, headers: dict[str, str]
 ) -> set[str]:
     """Repos with an existing scout issue in the target repo, open or closed."""
-    query = (
-        f'repo:{config.issues.target_repo} '
-        f'label:"{config.issues.label}" in:title "candidate:"'
-    )
-    response = request_with_backoff(
-        lambda: session.get(
-            "https://api.github.com/search/issues",
-            params={"q": query, "per_page": 100},
-            headers=headers,
-            timeout=30,
-        ),
-        should_retry=github_rate_limited,
-    )
-    response.raise_for_status()
     repos: set[str] = set()
-    for item in response.json().get("items", []):
-        match = _CANDIDATE_TITLE_RE.search(item.get("title", ""))
-        if match:
-            try:
-                repos.add(normalize_repo(match.group(1)))
-            except ValueError:
+    for page in range(1, 101):
+        response = request_with_backoff(
+            lambda: session.get(
+                f"https://api.github.com/repos/{config.issues.target_repo}/issues",
+                params={"state": "all", "per_page": 100, "page": page},
+                headers=headers,
+                timeout=30,
+            ),
+            should_retry=github_rate_limited,
+        )
+        response.raise_for_status()
+        items = response.json()
+        for item in items:
+            if item.get("pull_request"):
                 continue
+            labels = {label.get("name") for label in item.get("labels", [])}
+            if config.issues.label not in labels:
+                continue
+            match = _CANDIDATE_TITLE_RE.search(item.get("title", ""))
+            if match:
+                try:
+                    repos.add(normalize_repo(match.group(1)))
+                except ValueError:
+                    continue
+        if len(items) < 100:
+            break
     return repos
 
 
