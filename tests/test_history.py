@@ -55,3 +55,30 @@ def test_issue_migration_marker_round_trips(tmp_path):
     history.mark_issues_migrated()
     history.write()
     assert History(path).issues_migrated
+
+
+def test_title_only_rows_are_flagged_and_persisted(tmp_path):
+    path = tmp_path / "candidates.jsonl"
+    row = {"kind": "repo", "repo": "owner/junk", "issue_number": 12,
+           "status": "filed", "sources": []}
+    history = History(path)
+    history.repos["owner/junk"] = row
+    history.record_candidates([candidate()])
+    history.write()
+
+    restored = History(path)
+    assert restored.mark_title_only_rows() == 1
+    restored.write()
+
+    repaired = History(path)
+    assert repaired.repos["owner/junk"]["title_only"] is True
+    assert "title_only" not in repaired.repos["alice/memorymesh"]
+    assert repaired.is_repo_seen("owner/junk")  # stays part of the ledger
+
+
+def test_title_only_marking_is_idempotent(tmp_path):
+    path = tmp_path / "candidates.jsonl"
+    history = History(path)
+    history.repos["owner/junk"] = {"kind": "repo", "repo": "owner/junk"}
+    assert history.mark_title_only_rows() == 1
+    assert history.mark_title_only_rows() == 0

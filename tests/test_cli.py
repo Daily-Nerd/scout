@@ -115,7 +115,7 @@ def test_help_lists_subcommands(capsys):
         main(["--help"])
     assert exc.value.code == 0
     out = capsys.readouterr().out
-    for name in ("scan", "check", "file", "run"):
+    for name in ("scan", "check", "file", "run", "retract", "repair"):
         assert name in out
 
 
@@ -198,6 +198,25 @@ def test_run_apply_files_and_counts_skips(wired, capsys, tmp_path, monkeypatch):
     assert entry["filed"] == 1
     assert entry["known"] == 1
     assert entry["skipped"] == {"already in the atlas": 1}
+
+
+def test_gather_runs_before_history_migration(wired, monkeypatch):
+    config_path, _, _ = wired
+    order: list[str] = []
+    monkeypatch.setenv("SCOUT_GITHUB_TOKEN", "t")
+    monkeypatch.setattr(
+        cli.github_search, "search",
+        lambda *args, **kwargs: order.append("gather") or [],
+    )
+    monkeypatch.setattr(
+        cli.reddit, "scan", lambda *args, **kwargs: order.append("gather") or []
+    )
+    monkeypatch.setattr(
+        cli.issues_mod, "migrate_existing_issues",
+        lambda *args, **kwargs: order.append("migrate") or 0,
+    )
+    assert main(["run", "--config", str(config_path)]) == 0
+    assert order.index("gather") < order.index("migrate")
 
 
 def test_dotenv_fills_missing_token(tmp_path):
