@@ -5,7 +5,7 @@ from pathlib import Path
 
 from scout.models import Candidate
 from scout.report import RunReport, render_report, write_report
-from scout.tiering import TierScore
+from scout.tiering import Component, TierScore
 
 RAN_AT = datetime(2026, 9, 11, 5, 30, tzinfo=UTC)
 
@@ -22,10 +22,13 @@ def candidate(repo: str, description: str = "memory store for agents") -> Candid
     )
 
 
-def score(repo: str, value: float, tier: str) -> TierScore:
+def score(
+    repo: str, value: float, tier: str, absent: list[str] | None = None
+) -> TierScore:
     return TierScore(
         repo=repo, score=value, tier=tier, label=f"scout:tier-{tier}",
-        components={"stars": value},
+        components={"stars": Component(input=value, value=value)},
+        absent=absent or [],
     )
 
 
@@ -70,6 +73,7 @@ def test_render_contains_every_section():
     assert "- A: 2" in text
     assert "- B: 1" in text
     assert "- C: 1" in text
+    assert "- scored with absent components: 0" in text
     assert "## Top 20 by score" in text
 
 
@@ -91,7 +95,46 @@ def test_no_em_dash_anywhere():
 def test_empty_report_renders_without_error():
     text = render_report(RunReport(), RAN_AT)
     assert "## Candidates seen: 0" in text
+    assert "- scored with absent components: 0" in text
     assert "\u2014" not in text
+
+
+def test_top_list_marks_partial_scores():
+    report = RunReport(
+        seen=1,
+        scores={"eve/partial": score("eve/partial", 3.0, "c", absent=["stars", "topics"])},
+        candidates={"eve/partial": candidate("eve/partial")},
+    )
+    text = render_report(report, RAN_AT)
+    line = next(l for l in text.splitlines() if l.startswith("1. "))
+    assert line.endswith(" partial")
+
+
+def test_top_list_has_no_partial_suffix_when_complete():
+    report = RunReport(
+        seen=1,
+        scores={"eve/complete": score("eve/complete", 3.0, "c")},
+        candidates={"eve/complete": candidate("eve/complete")},
+    )
+    text = render_report(report, RAN_AT)
+    line = next(l for l in text.splitlines() if l.startswith("1. "))
+    assert not line.endswith(" partial")
+
+
+def test_histogram_reports_count_of_partial_scores():
+    report = RunReport(
+        seen=2,
+        scores={
+            "eve/partial": score("eve/partial", 3.0, "c", absent=["stars"]),
+            "frank/complete": score("frank/complete", 4.0, "c"),
+        },
+        candidates={
+            "eve/partial": candidate("eve/partial"),
+            "frank/complete": candidate("frank/complete"),
+        },
+    )
+    text = render_report(report, RAN_AT)
+    assert "- scored with absent components: 1" in text
 
 
 def test_write_report_names_file_by_utc_timestamp(tmp_path):

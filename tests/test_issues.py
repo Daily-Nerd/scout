@@ -14,7 +14,7 @@ from scout.issues import (
 )
 from scout.models import Candidate
 from scout.store import Store
-from scout.tiering import TierScore
+from scout.tiering import Component, TierScore
 
 DEFAULT_CONFIG = """
 [github]
@@ -81,11 +81,18 @@ def github_candidate() -> Candidate:
     )
 
 
-def tier(repo: str, name: str, score: float, tier_name: str) -> TierScore:
+def tier(
+    repo: str,
+    name: str,
+    score: float,
+    tier_name: str,
+    absent: list[str] | None = None,
+) -> TierScore:
     return TierScore(
         repo=repo, score=score, tier=tier_name,
         label=f"scout:tier-{tier_name}",
-        components={"stars": score},
+        components={"stars": Component(input=name, value=score)},
+        absent=absent or [],
     )
 
 
@@ -205,7 +212,7 @@ def test_apply_files_with_tier_label_and_score_in_body(tmp_path):
     assert payload["title"] == "candidate: alice/memorymesh"
     assert payload["labels"] == ["scout:candidate", "scout:tier-a"]
     assert "Tier: A (score 9.00)" in payload["body"]
-    assert "Score components: stars 9.00" in payload["body"]
+    assert "Score components: stars=9.00" in payload["body"]
     assert session.label_posts == 2  # candidate label plus tier label
 
 
@@ -257,8 +264,24 @@ def test_render_body_with_tier_shows_components():
     candidate = reddit_candidate()
     body = render_body(candidate, tier("alice/memorymesh", "x", 7.25, "b"))
     assert "Tier: B (score 7.25)" in body
-    assert "Score components:" in body
+    assert "Score components: stars=7.25" in body
     assert "\u2014" not in body
+
+
+def test_render_body_shows_partial_marker_when_components_are_absent():
+    candidate = reddit_candidate()
+    partial_tier = tier(
+        "alice/memorymesh", "x", 3.0, "c", absent=["stars", "topics"]
+    )
+    body = render_body(candidate, partial_tier)
+    assert "Tier: C (score 3.00) (partial: stars, topics)" in body
+
+
+def test_render_body_omits_partial_marker_when_nothing_is_absent():
+    candidate = reddit_candidate()
+    body = render_body(candidate, tier("alice/memorymesh", "x", 9.0, "a"))
+    assert "Tier: A (score 9.00)" in body
+    assert "partial" not in body
 
 
 def test_apply_files_and_marks_store(tmp_path):

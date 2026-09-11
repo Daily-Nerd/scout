@@ -76,6 +76,8 @@ def render_report(report: RunReport, ran_at: datetime | None = None) -> str:
     lines.extend(["", "## Tier histogram", ""])
     for tier in (TIER_A, TIER_B, TIER_C):
         lines.append(f"- {tier.upper()}: {histogram.get(tier, 0)}")
+    partial_count = sum(1 for score in report.scores.values() if score.absent)
+    lines.append(f"- scored with absent components: {partial_count}")
 
     ranked = sorted(report.scores.values(), key=lambda s: (-s.score, s.repo))
     lines.extend(["", f"## Top {TOP_N} by score", ""])
@@ -83,10 +85,13 @@ def render_report(report: RunReport, ran_at: datetime | None = None) -> str:
         for rank, score in enumerate(ranked[:TOP_N], start=1):
             candidate = report.candidates.get(score.repo)
             description = _one_line(candidate.description if candidate else "")
-            lines.append(
+            line = (
                 f"{rank}. {score.repo} - {score.score:.2f} "
                 f"({score.label}) - {description}"
             )
+            if score.absent:
+                line += " partial"
+            lines.append(line)
     else:
         lines.append("- none")
     lines.append("")

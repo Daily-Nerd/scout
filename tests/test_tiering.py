@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import base64
+from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime
+
+import pytest
 
 from scout.config import Config, load
 from scout.models import Candidate
@@ -11,7 +14,9 @@ from scout.tiering import (
     TIER_B,
     TIER_C,
     TIER_LABELS,
+    Component,
     collect_readme_sizes,
+    component_summary,
     score_candidate,
 )
 
@@ -94,61 +99,143 @@ def test_full_score_matches_hand_computation(tmp_path):
     # readme: 2 * 10000/20000 = 1.0
     # topics: "agent-memory" matches both families -> 2.0
     # density: "memory" and "agents" match, 2 of 4 words -> 3 * 0.5 = 1.5
-    assert score.components["stars"] == 1.0
-    assert score.components["recency"] == 4.0 * (1 - 3 / 90)
-    assert score.components["name"] == 2.0
-    assert score.components["readme"] == 1.0
-    assert score.components["topics"] == 2.0
-    assert score.components["density"] == 1.5
-    assert score.score == sum(score.components.values())
+    assert score.components["stars"].value == 1.0
+    assert score.components["recency"].value == 4.0 * (1 - 3 / 90)
+    assert score.components["name"].value == 2.0
+    assert score.components["readme"].value == 1.0
+    assert score.components["topics"].value == 2.0
+    assert score.components["density"].value == 1.5
+    assert score.absent == []
+    assert score.score == sum(
+        c.value for c in score.components.values() if c.value is not None
+    )
 
 
-def test_missing_values_score_zero_components(tmp_path):
+def test_missing_values_are_absent_not_zero(tmp_path):
     config = load_config(tmp_path)
     candidate = make_candidate(
         stars=None, pushed_at=None, topics=[], description=""
     )
     score = score_candidate(config, candidate, now=NOW)
-    assert score.components["stars"] == 0.0
-    assert score.components["recency"] == 0.0
-    assert score.components["readme"] == 0.0
-    assert score.components["topics"] == 0.0
-    assert score.components["density"] == 0.0
+    assert score.components["stars"] == Component(input=None, value=None)
+    assert score.components["recency"].value is None
+    assert score.components["readme"].value is None
+    assert score.components["density"].value is None
+    # topics is present (source is still github, just no topics listed)
+    assert score.components["topics"].value == 0.0
+    assert score.absent == ["stars", "recency", "readme", "density"]
     # only the name term survives, well below tier B
+    assert score.score == 2.0
     assert score.tier == TIER_C
 
 
-def test_unparseable_pushed_at_scores_zero_recency(tmp_path):
+def test_stars_zero_is_present_not_absent(tmp_path):
+    config = load_config(tmp_path)
+    score = score_candidate(config, make_candidate(stars=0), now=NOW)
+    assert score.components["stars"].value == 0.0
+    assert score.components["stars"].input == 0
+    assert "stars" not in score.absent
+
+
+def test_unparseable_pushed_at_leaves_recency_absent(tmp_path):
     config = load_config(tmp_path)
     candidate = make_candidate(pushed_at="not a date")
     score = score_candidate(config, candidate, now=NOW)
-    assert score.components["recency"] == 0.0
+    assert score.components["recency"].value is None
+    assert score.components["recency"].input is None
+    assert "recency" in score.absent
 
 
 def test_recency_clamps_outside_the_window(tmp_path):
     config = load_config(tmp_path)
     old = make_candidate(pushed_at="2026-01-01T00:00:00Z")
-    assert score_candidate(config, old, now=NOW).components["recency"] == 0.0
+    assert score_candidate(config, old, now=NOW).components["recency"].value == 0.0
     future = make_candidate(pushed_at="2027-01-01T00:00:00Z")
-    assert score_candidate(config, future, now=NOW).components["recency"] == 4.0
+    assert score_candidate(config, future, now=NOW).components["recency"].value == 4.0
 
 
 def test_readme_component_caps_at_configured_size(tmp_path):
     config = load_config(tmp_path)
     capped = score_candidate(config, make_candidate(), readme_bytes=10**9, now=NOW)
-    assert capped.components["readme"] == 2.0
-    none = score_candidate(config, make_candidate(), readme_bytes=None, now=NOW)
-    assert none.components["readme"] == 0.0
+    assert capped.components["readme"].value == 2.0
+    absent = score_candidate(config, make_candidate(), readme_bytes=None, now=NOW)
+    assert absent.components["readme"].value is None
+    assert "readme" in absent.absent
+
+
+def test_readme_zero_bytes_is_present_not_absent(tmp_path):
+    config = load_config(tmp_path)
+    score = score_candidate(config, make_candidate(), readme_bytes=0, now=NOW)
+    assert score.components["readme"].value == 0.0
+    assert score.components["readme"].input == 0
+    assert "readme" not in score.absent
 
 
 def test_name_component_uses_memoryish_terms_only(tmp_path):
     config = load_config(tmp_path)
-    assert score_candidate(
+    no_match = score_candidate(
         config, make_candidate(repo="alice/agent-helper"), now=NOW
-    ).components["name"] == 0.0
-    assert score_candidate(
+    )
+    assert no_match.components["name"].value == 0.0
+    assert no_match.components["name"].input is None
+    matched = score_candidate(
         config, make_candidate(repo="alice/recall-hub"), now=NOW
-    ).components["name"] == 2.0
+    )
+    assert matched.components["name"].value == 2.0
+    assert matched.components["name"].input == "recall"
+
+
+def test_topics_absent_for_non_github_source(tmp_path):
+    config = load_config(tmp_path)
+    score = score_candidate(
+        config, make_candidate(source="reddit", stars=None, pushed_at=None), now=NOW
+    )
+    assert score.components["stars"].value is None
+    assert score.components["recency"].value is None
+    assert score.components["topics"].value is None
+    assert score.absent == ["stars", "recency", "readme", "topics"]
+    # name and density still contribute, so the candidate still gets a tier
+    assert score.score == (
+        score.components["name"].value + score.components["density"].value
+    )
+    assert score.tier == TIER_C
+
+
+def test_density_absent_when_description_has_no_words(tmp_path):
+    config = load_config(tmp_path)
+    score = score_candidate(
+        config, make_candidate(description=""), now=NOW
+    )
+    assert score.components["density"].value is None
+    assert score.components["density"].input is None
+    assert "density" in score.absent
+
+
+def test_component_summary_shows_unknown_for_absent_components(tmp_path):
+    config = load_config(tmp_path)
+    candidate = make_candidate(
+        stars=None, pushed_at=None, topics=[], description=""
+    )
+    score = score_candidate(config, candidate, now=NOW)
+    summary = component_summary(score)
+    assert "stars=unknown" in summary
+    assert "recency=unknown" in summary
+    assert "readme=unknown" in summary
+    assert "density=unknown" in summary
+    assert "name=2.00" in summary
+    assert "topics=0.00" in summary
+
+
+def test_scored_at_is_utc_iso_from_now(tmp_path):
+    config = load_config(tmp_path)
+    score = score_candidate(config, make_candidate(), readme_bytes=1000, now=NOW)
+    assert score.scored_at == "2026-09-11T00:00:00Z"
+
+
+def test_component_is_frozen():
+    component = Component(input=1, value=2.0)
+    with pytest.raises(FrozenInstanceError):
+        component.value = 3.0  # type: ignore[misc]
 
 
 def test_tier_threshold_boundaries(tmp_path):

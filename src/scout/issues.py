@@ -59,7 +59,10 @@ def render_body(candidate: Candidate, tier: TierScore | None = None) -> str:
         f"License: {candidate.license or 'none detected'}",
     ]
     if tier is not None:
-        lines.append(f"Tier: {tier.tier.upper()} (score {tier.score:.2f})")
+        tier_line = f"Tier: {tier.tier.upper()} (score {tier.score:.2f})"
+        if tier.absent:
+            tier_line += f" (partial: {', '.join(tier.absent)})"
+        lines.append(tier_line)
         lines.append(f"Score components: {component_summary(tier)}")
     if candidate.source == "reddit":
         author = f" by {candidate.author}" if candidate.author else ""
