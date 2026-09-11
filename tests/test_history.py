@@ -356,6 +356,76 @@ def test_update_latest_merges_fields_into_existing_latest(tmp_path):
     assert latest["repo"] == "alice/memorymesh"  # untouched fields survive
 
 
+def test_mark_refresh_attempt_stamps_time_and_clears_error_on_success(tmp_path):
+    path = tmp_path / "candidates.jsonl"
+    history = History(path)
+    history.mark_repo_seen("owner/repo", "github")
+    history.mark_refresh_attempt("owner/repo", "2026-09-11T00:00:00Z", error="404")
+    history.write()
+
+    restored = History(path)
+    row = restored.repos["owner/repo"]
+    assert row["refresh_attempted_at"] == "2026-09-11T00:00:00Z"
+    assert row["refresh_error"] == "404"
+
+    restored.mark_refresh_attempt("owner/repo", "2026-09-12T00:00:00Z", error=None)
+    restored.write()
+
+    reloaded = History(path)
+    row = reloaded.repos["owner/repo"]
+    assert row["refresh_attempted_at"] == "2026-09-12T00:00:00Z"
+    assert "refresh_error" not in row
+
+
+def test_rows_due_for_refresh_uses_max_of_scored_at_and_refresh_attempted_at(tmp_path):
+    path = tmp_path / "candidates.jsonl"
+    history = History(path)
+    # never scored, but a failed refresh attempt was stamped today: must
+    # not be reselected until `days` pass again
+    history.repos["owner/dead"] = {
+        "kind": "repo", "repo": "owner/dead", "discovery": "seen",
+        "assessment": "none", "refresh_attempted_at": "2026-09-11T00:00:00Z",
+        "refresh_error": "404", "last_seen_at": "2026-08-01T00:00:00Z",
+    }
+    due = history.rows_due_for_refresh(NOW, days=14, limit=50)
+    assert due == []
+
+
+def test_rows_due_for_refresh_sorts_by_refresh_attempted_at_when_scored_at_absent(tmp_path):
+    path = tmp_path / "candidates.jsonl"
+    history = History(path)
+    history.repos["owner/attempted-old"] = {
+        "kind": "repo", "repo": "owner/attempted-old", "discovery": "seen",
+        "assessment": "none", "refresh_attempted_at": "2026-08-01T00:00:00Z",
+        "last_seen_at": "2026-08-01T00:00:00Z",
+    }
+    history.repos["owner/never-touched"] = {
+        "kind": "repo", "repo": "owner/never-touched", "discovery": "seen",
+        "assessment": "none", "last_seen_at": "2026-08-15T00:00:00Z",
+    }
+    due = history.rows_due_for_refresh(NOW, days=14, limit=50)
+    # never-touched has no stamp at all (sorts first, before any real
+    # timestamp), attempted-old has an old refresh_attempted_at
+    assert due == ["owner/never-touched", "owner/attempted-old"]
+
+
+def test_rows_due_for_refresh_uses_the_later_of_scored_at_and_refresh_attempted_at(
+    tmp_path,
+):
+    path = tmp_path / "candidates.jsonl"
+    history = History(path)
+    # scored long ago, but freshly attempted (e.g. a label-patch failure
+    # after a successful rescore): the later stamp wins and keeps it out
+    history.repos["owner/recently-attempted"] = {
+        "kind": "repo", "repo": "owner/recently-attempted", "discovery": "filed",
+        "assessment": "tier-b", "scored_at": "2026-01-01T00:00:00Z",
+        "refresh_attempted_at": "2026-09-10T00:00:00Z",
+        "last_seen_at": "2026-01-01T00:00:00Z",
+    }
+    due = history.rows_due_for_refresh(NOW, days=14, limit=50)
+    assert due == []
+
+
 def test_update_latest_creates_latest_for_a_title_only_row(tmp_path):
     path = tmp_path / "candidates.jsonl"
     history = History(path)

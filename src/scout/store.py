@@ -197,3 +197,9 @@ class Store:
     def update_latest(self, repo: str, **payload: object) -> None:
         if self.history is not None:
             self.history.update_latest(repo, **payload)
+
+    def mark_refresh_attempt(
+        self, repo: str, attempted_at: str, *, error: str | None = None
+    ) -> None:
+        if self.history is not None:
+            self.history.mark_refresh_attempt(repo, attempted_at, error=error)

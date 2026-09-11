@@ -10,7 +10,8 @@ lands on can differ from what is on file, and when the row is already
 filed, that issue's tier label is swapped to match.
 
 Refresh never files an issue and never touches an issue beyond that one
-label swap.
+label swap. A single row's upstream error, at any step, never aborts
+the pass: it is recorded and the next row is still attempted.
 """
 
 from __future__ import annotations
@@ -60,23 +61,42 @@ def refresh(
 ) -> RefreshOutcome:
     """Rescore stale rows, at most config.refresh.max_per_run of them.
 
-    Each due row gets a fresh GET /repos/{repo}. A 404 is recorded in
-    `failed` and the row is left exactly as it was, with no further
-    fetch and no rescore. Otherwise `latest` is updated with the fresh
-    stars, pushed_at, description, topics, license and html_url, the
-    row's source is left untouched (a title_only row, which has no
-    latest yet, has its source and source_url filled in instead, from
-    the row's sources and the fetched html_url), the git tree and
-    README are refetched unconditionally, bypassing the usual cache,
-    and the row is rescored and re-recorded. When the resulting tier
-    differs from what was on file and the row already has a filed
-    issue, that issue's tier label is swapped to match.
+    Each due row gets a fresh GET /repos/{repo}. Any non-2xx response
+    (a 404, a 500, a 451, or a rate limit that outlives the backoff
+    retries) is recorded in `failed`, stamped via
+    `store.mark_refresh_attempt` with the status code as `error`, and
+    the row is left exactly as it was: no further fetch, no rescore.
+    This never raises, so one bad repo never aborts the rest of the
+    pass and never crashes the run that called refresh().
+
+    Otherwise `latest` is updated with the fresh stars, pushed_at,
+    description, topics, license and html_url; the row's source is
+    left untouched (a title_only row, which has no latest yet, has its
+    source and source_url filled in instead, from the row's sources
+    and the fetched html_url). The git tree and README are refetched
+    unconditionally, bypassing the usual cache; either can come back
+    unknown (None) on its own error without failing the row, the same
+    way a normal scan tolerates a missing tree or README. The row is
+    then rescored and re-recorded, and this always counts as
+    refreshed, whether or not anything below it fails.
+
+    When the resulting tier differs from what was on file, that is
+    recorded in `tier_changes` regardless of whether the row has a
+    filed issue. Only when it does is `issues.update_tier_label` also
+    called to swap the issue's label; if that call itself fails (a bad
+    GET or PATCH), the failure is caught, recorded in `failed` with a
+    "label patch failed" error, and the pass continues to the next
+    row. Either way, every row visited gets exactly one
+    `mark_refresh_attempt` stamp with the same `now`, so a row that
+    keeps failing still advances its freshness stamp instead of
+    starving the queue forever.
     """
     if store.history is None:
         return RefreshOutcome()
     if session is None:
         session = requests.Session()
     now = now or datetime.now(UTC)
+    attempted_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     headers = _headers(token)
     outcome = RefreshOutcome()
 
@@ -92,11 +112,13 @@ def refresh(
             should_retry=github_rate_limited,
             sleep=sleep,
         )
-        if response.status_code == 404:
+        if not (200 <= response.status_code < 300):
             outcome.failed.append(repo)
+            store.mark_refresh_attempt(
+                repo, attempted_at, error=str(response.status_code)
+            )
             sleep(2)
             continue
-        response.raise_for_status()
         payload = response.json()
 
         extra: dict[str, object] = {}
@@ -123,8 +145,7 @@ def refresh(
         )
         if tree_signals is not None:
             has_tests, source_files = tree_signals
-            fetched_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-            store.save_tree_signals(repo, has_tests, source_files, fetched_at)
+            store.save_tree_signals(repo, has_tests, source_files, attempted_at)
         else:
             has_tests, source_files = None, None
 
@@ -143,16 +164,25 @@ def refresh(
         store.record_score(repo, score)
         outcome.refreshed.append(repo)
 
-        issue_number = row.get("issue_number")
         new_tier = score.tier
-        if issue_number and old_tier and old_tier != new_tier:
-            issues_mod.update_tier_label(
-                config, session, token, issue_number,
-                TIER_LABELS[old_tier], TIER_LABELS[new_tier],
-                apply=apply, sleep=sleep,
-            )
+        tier_changed = bool(old_tier) and old_tier != new_tier
+        if tier_changed:
             outcome.tier_changes.append((repo, old_tier, new_tier))
 
+        issue_number = row.get("issue_number")
+        attempt_error: str | None = None
+        if tier_changed and issue_number:
+            try:
+                issues_mod.update_tier_label(
+                    config, session, token, issue_number,
+                    TIER_LABELS[old_tier], TIER_LABELS[new_tier],
+                    apply=apply, sleep=sleep,
+                )
+            except Exception:
+                attempt_error = "label patch failed"
+                outcome.failed.append(repo)
+
+        store.mark_refresh_attempt(repo, attempted_at, error=attempt_error)
         sleep(2)
 
     return outcome

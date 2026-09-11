@@ -15,6 +15,7 @@ from scout.tiering import (
     TIER_C,
     TIER_LABELS,
     Component,
+    _fetch_readme_size,
     _fetch_tree_signals,
     collect_readme_sizes,
     collect_tree_signals,
@@ -494,6 +495,23 @@ def _store_with_history(tmp_path, candidates):
     store = Store(config.state.db_path, config.state.candidates_path)
     store.record_candidates(candidates)
     return config, store
+
+
+class FakeReadmeStatusSession:
+    """readme -> a canned status code, no body."""
+
+    def __init__(self, status_code: int):
+        self.status_code = status_code
+
+    def get(self, url, params=None, headers=None, timeout=None):
+        return FakeResponse(status_code=self.status_code)
+
+
+def test_fetch_readme_size_returns_none_on_a_non_404_error_status():
+    result = _fetch_readme_size(
+        FakeReadmeStatusSession(500), "alice/memorymesh", {}, sleep=lambda s: None,
+    )
+    assert result is None
 
 
 def test_readme_sizes_fetch_decode_and_cache(tmp_path):

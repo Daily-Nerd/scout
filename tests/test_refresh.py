@@ -108,11 +108,12 @@ class FakeSession:
     """repo/tree/readme/issue-label endpoints, all keyed by repo or number."""
 
     def __init__(self, repo_payloads=None, tree_payloads=None, readme_payloads=None,
-                 issue_labels=None):
+                 issue_labels=None, patch_status=200):
         self.repo_payloads = repo_payloads or {}
         self.tree_payloads = tree_payloads or {}
         self.readme_payloads = readme_payloads or {}
         self.issue_labels = issue_labels or {}
+        self.patch_status = patch_status
         self.gets: list[str] = []
         self.patches: list[tuple[str, dict]] = []
 
@@ -129,20 +130,22 @@ class FakeSession:
             payload = self.readme_payloads.get(repo)
             if payload is None:
                 return FakeResponse(status_code=404)
+            if isinstance(payload, int):
+                return FakeResponse(status_code=payload)
             return FakeResponse(payload=payload)
         if "/issues/" in url:
             number = int(url.rsplit("/", 1)[-1])
             labels = self.issue_labels.get(number, [])
             return FakeResponse(payload={"labels": [{"name": n} for n in labels]})
         repo = url.split(f"{API}/repos/")[1]
-        outcome = self.repo_payloads.get(repo, "404")
-        if outcome == "404":
-            return FakeResponse(status_code=404)
+        outcome = self.repo_payloads.get(repo, 404)
+        if isinstance(outcome, int):
+            return FakeResponse(status_code=outcome)
         return FakeResponse(payload=outcome)
 
     def patch(self, url, headers=None, json=None, timeout=None):
         self.patches.append((url, json))
-        return FakeResponse(payload={})
+        return FakeResponse(payload={}, status_code=self.patch_status)
 
 
 def _row(**overrides) -> dict:
@@ -448,6 +451,165 @@ def test_sleeps_two_seconds_between_rows(tmp_path):
         refresh(config, store, token="t", session=session, sleep=sleeps.append,
                 now=NOW, apply=False)
         assert sleeps == [2, 2]
+    finally:
+        store.close()
+
+
+def test_500_on_get_repos_lands_in_failed_and_next_row_still_refreshes(tmp_path):
+    config = load_config(tmp_path)
+    store = Store(config.state.db_path, config.state.candidates_path)
+    store.history.repos["owner/broken"] = _row(
+        repo="owner/broken", scored_at="2026-08-01T00:00:00Z",
+        last_seen_at="2026-08-01T00:00:00Z", tier="c", score=2.0,
+    )
+    store.history.repos["owner/broken"]["latest"]["repo"] = "owner/broken"
+    store.history.repos["owner/fine"] = _row(
+        repo="owner/fine", scored_at="2026-08-02T00:00:00Z",
+        last_seen_at="2026-08-02T00:00:00Z", tier="c", score=2.0,
+    )
+    store.history.repos["owner/fine"]["latest"]["repo"] = "owner/fine"
+    try:
+        session = FakeSession(
+            repo_payloads={
+                "owner/broken": 500,
+                "owner/fine": {"stargazers_count": 0, "pushed_at": None,
+                               "description": "", "topics": [], "license": None,
+                               "html_url": "x"},
+            },
+        )
+        outcome = refresh(
+            config, store, token="t", session=session,
+            sleep=lambda s: None, now=NOW, apply=False,
+        )
+        assert outcome.failed == ["owner/broken"]
+        assert outcome.refreshed == ["owner/fine"]
+        broken_row = store.history.repos["owner/broken"]
+        assert broken_row["tier"] == "c"
+        assert broken_row["score"] == 2.0
+        assert broken_row["refresh_attempted_at"] == NOW_ISO
+        assert broken_row["refresh_error"] == "500"
+        fine_row = store.history.repos["owner/fine"]
+        assert fine_row["refresh_attempted_at"] == NOW_ISO
+        assert "refresh_error" not in fine_row
+        # no tree/readme fetch happened for the broken repo
+        assert not any("owner/broken/git" in url for url in session.gets)
+        assert not any(url.endswith("owner/broken/readme") for url in session.gets)
+    finally:
+        store.close()
+
+
+def test_500_on_readme_leaves_readme_absent_but_row_still_rescored(tmp_path):
+    config = load_config(tmp_path)
+    store = Store(config.state.db_path, config.state.candidates_path)
+    store.history.repos["alice/recall-hub"] = _row(
+        repo="alice/recall-hub", tier="c", score=2.0,
+    )
+    store.history.repos["alice/recall-hub"]["latest"]["repo"] = "alice/recall-hub"
+    try:
+        session = FakeSession(
+            repo_payloads={
+                "alice/recall-hub": {
+                    "stargazers_count": 100, "pushed_at": NOW_ISO,
+                    "description": "agent memory", "topics": [],
+                    "license": None, "html_url": "https://github.com/alice/recall-hub",
+                },
+            },
+            tree_payloads={"alice/recall-hub": _tree_payload(0, has_tests=False)},
+            readme_payloads={"alice/recall-hub": 500},
+        )
+        outcome = refresh(
+            config, store, token="t", session=session,
+            sleep=lambda s: None, now=NOW, apply=False,
+        )
+        assert outcome.refreshed == ["alice/recall-hub"]
+        assert outcome.failed == []
+        row = store.history.repos["alice/recall-hub"]
+        assert "readme" in row["absent_components"]
+        assert store.readme_size("alice/recall-hub") is None
+        assert row["refresh_attempted_at"] == NOW_ISO
+        assert "refresh_error" not in row
+    finally:
+        store.close()
+
+
+def test_failed_label_patch_does_not_stop_the_pass(tmp_path):
+    config = load_config(tmp_path)
+    store = Store(config.state.db_path, config.state.candidates_path)
+    store.history.repos["alice/recall-hub"] = _row(
+        repo="alice/recall-hub", tier="b", score=6.0, issue_number=42,
+        discovery="filed",
+    )
+    store.history.repos["alice/recall-hub"]["latest"]["repo"] = "alice/recall-hub"
+    store.history.repos["owner/fine"] = _row(
+        repo="owner/fine", tier="c", score=2.0,
+    )
+    store.history.repos["owner/fine"]["latest"]["repo"] = "owner/fine"
+    try:
+        session = FakeSession(
+            repo_payloads={
+                "alice/recall-hub": {
+                    "stargazers_count": 500, "pushed_at": NOW_ISO,
+                    "description": "agent memory", "topics": ["memory"],
+                    "license": {"spdx_id": "MIT"},
+                    "html_url": "https://github.com/alice/recall-hub",
+                },
+                "owner/fine": {"stargazers_count": 0, "pushed_at": None,
+                               "description": "", "topics": [], "license": None,
+                               "html_url": "x"},
+            },
+            tree_payloads={
+                "alice/recall-hub": _tree_payload(40, has_tests=True),
+                "owner/fine": _tree_payload(0, has_tests=False),
+            },
+            readme_payloads={"alice/recall-hub": _readme_payload(20000)},
+            issue_labels={42: ["scout:candidate", "scout:tier-b"]},
+            patch_status=500,
+        )
+        outcome = refresh(
+            config, store, token="t", session=session,
+            sleep=lambda s: None, now=NOW, apply=True,
+        )
+        # the pass did not stop: the second row still got refreshed
+        assert "owner/fine" in outcome.refreshed
+        # the tier change is still recorded even though the label patch failed
+        assert outcome.tier_changes == [("alice/recall-hub", "b", "a")]
+        assert "alice/recall-hub" in outcome.failed
+        row = store.history.repos["alice/recall-hub"]
+        # the rescore itself went through
+        assert row["tier"] == "a"
+        assert row["refresh_error"] == "label patch failed"
+    finally:
+        store.close()
+
+
+def test_tier_changes_recorded_even_without_an_issue_number(tmp_path):
+    config = load_config(tmp_path)
+    store = Store(config.state.db_path, config.state.candidates_path)
+    store.history.repos["alice/recall-hub"] = _row(
+        repo="alice/recall-hub", tier="c", score=2.0,
+    )
+    store.history.repos["alice/recall-hub"]["latest"]["repo"] = "alice/recall-hub"
+    try:
+        session = FakeSession(
+            repo_payloads={
+                "alice/recall-hub": {
+                    "stargazers_count": 500, "pushed_at": NOW_ISO,
+                    "description": "agent memory", "topics": ["memory"],
+                    "license": {"spdx_id": "MIT"},
+                    "html_url": "https://github.com/alice/recall-hub",
+                },
+            },
+            tree_payloads={"alice/recall-hub": _tree_payload(40, has_tests=True)},
+            readme_payloads={"alice/recall-hub": _readme_payload(20000)},
+        )
+        outcome = refresh(
+            config, store, token="t", session=session,
+            sleep=lambda s: None, now=NOW, apply=False,
+        )
+        assert outcome.tier_changes == [("alice/recall-hub", "c", "a")]
+        # no issue exists, so no label patch was ever attempted
+        assert session.patches == []
+        assert outcome.failed == []
     finally:
         store.close()
 

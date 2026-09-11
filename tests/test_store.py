@@ -112,6 +112,21 @@ def test_update_latest_proxy_is_a_no_op_without_history(tmp_path):
         store.update_latest("owner/repo", stars=42)
 
 
+def test_mark_refresh_attempt_proxy(tmp_path):
+    history_path = tmp_path / "data" / "candidates.jsonl"
+    with Store(tmp_path / "state.db", history_path) as store:
+        store.mark_repo_seen("owner/repo", "github")
+        store.mark_refresh_attempt("owner/repo", "2026-09-11T00:00:00Z", error="404")
+        row = store.history.repos["owner/repo"]
+        assert row["refresh_attempted_at"] == "2026-09-11T00:00:00Z"
+        assert row["refresh_error"] == "404"
+
+
+def test_mark_refresh_attempt_proxy_is_a_no_op_without_history(tmp_path):
+    with Store(tmp_path / "state.db") as store:
+        store.mark_refresh_attempt("owner/repo", "2026-09-11T00:00:00Z", error="404")
+
+
 def test_history_survives_a_new_runner_store(tmp_path):
     state = tmp_path / "state.db"
     history = tmp_path / "data" / "candidates.jsonl"

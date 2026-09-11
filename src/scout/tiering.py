@@ -265,7 +265,14 @@ def _readme_size_from_payload(payload: dict) -> int | None:
 def _fetch_readme_size(
     session: requests.Session, repo: str, headers: dict[str, str], *, sleep=time.sleep
 ) -> int | None:
-    """README byte size for one repo, or None when there is no README."""
+    """README byte size for one repo, or None when there is no README or
+    the fetch itself failed.
+
+    A 404 is a known, scorable no-README state. Any other non-2xx status
+    or a malformed payload leaves the size unknown rather than raising,
+    the same way _fetch_tree_signals treats an unexpected response: a
+    single repo's transient error must not abort a whole batch.
+    """
     response = request_with_backoff(
         lambda: session.get(
             f"{API}/repos/{repo}/readme", headers=headers, timeout=30
@@ -275,8 +282,12 @@ def _fetch_readme_size(
     )
     if response.status_code == 404:
         return None
-    response.raise_for_status()
-    return _readme_size_from_payload(response.json())
+    try:
+        response.raise_for_status()
+        payload = response.json()
+    except Exception:
+        return None
+    return _readme_size_from_payload(payload)
 
 
 def collect_readme_sizes(

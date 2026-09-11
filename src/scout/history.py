@@ -219,15 +219,25 @@ class History:
             latest["tree_source_files"] = source_files
             latest["tree_fetched_at"] = fetched_at
 
+    @staticmethod
+    def _refresh_freshness_stamp(row: dict) -> str:
+        """The later of scored_at and refresh_attempted_at, or "" if
+        neither is set. Both are written in the same zero-padded
+        "%Y-%m-%dT%H:%M:%SZ" shape, so the plain string max is also the
+        chronological max. A failed attempt (404, upstream error, or a
+        label patch that did not go through) still counts: it must not
+        make a dead row sort first forever."""
+        return max(row.get("scored_at") or "", row.get("refresh_attempted_at") or "")
+
     def rows_due_for_refresh(self, now: datetime, days: int, limit: int) -> list[str]:
         """Repo rows overdue for a metadata refresh, oldest first.
 
         A row is due when its discovery is seen, filed or title_only, its
-        assessment is not atlas-known, and its scored_at is absent or
-        older than `days`. An unparseable scored_at counts as due, same
-        as an absent one. Results are ordered by scored_at then
-        last_seen_at, both ascending (a missing value sorts first), and
-        capped at `limit`.
+        assessment is not atlas-known, and its freshness stamp (the later
+        of scored_at and refresh_attempted_at) is absent or older than
+        `days`. An unparseable stamp counts as due, same as an absent
+        one. Results are ordered by that stamp then last_seen_at, both
+        ascending (a missing value sorts first), and capped at `limit`.
         """
         cutoff = now - timedelta(days=days)
         due: list[str] = []
@@ -238,17 +248,39 @@ class History:
                 continue
             if row.get("assessment") == "atlas-known":
                 continue
-            scored_at = row.get("scored_at")
-            if scored_at:
-                parsed = _parse_iso(scored_at)
+            stamp = self._refresh_freshness_stamp(row)
+            if stamp:
+                parsed = _parse_iso(stamp)
                 if parsed is not None and parsed >= cutoff:
                     continue
             due.append(repo)
         due.sort(key=lambda repo: (
-            self.repos[repo].get("scored_at") or "",
+            self._refresh_freshness_stamp(self.repos[repo]),
             self.repos[repo].get("last_seen_at") or "",
         ))
         return due[:limit]
+
+    def mark_refresh_attempt(
+        self, repo: str, attempted_at: str, *, error: str | None = None
+    ) -> None:
+        """Stamp a row with the outcome of one refresh attempt.
+
+        `refresh_attempted_at` is set whether the attempt succeeded or
+        failed, so a permanently-404ing repo still advances its
+        freshness stamp instead of starving the queue by always sorting
+        first. `refresh_error` (a short string such as "404", "500" or
+        "label patch failed") is set on failure and removed entirely on
+        success, so a clean row carries no error key at all.
+        """
+        row = self.repos.setdefault(
+            repo,
+            {"kind": "repo", "repo": repo, "first_seen_at": _now(), "sources": []},
+        )
+        row["refresh_attempted_at"] = attempted_at
+        if error:
+            row["refresh_error"] = error
+        else:
+            row.pop("refresh_error", None)
 
     def update_latest(self, repo: str, **payload: object) -> None:
         """Merge fields into a row's latest payload, creating it first if
