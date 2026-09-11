@@ -90,6 +90,13 @@ list_words = ["awesome", "list", "curated", "collection", "resources", "roundup"
 # repos get a tree fetch in one run; the rest are picked up next run.
 tree_max_per_run = 300
 
+[filing]
+# tier_b_min above is the quality knob: it decides which candidates are
+# good enough to file at all. max_per_run is the volume knob: it caps how
+# many of those pass a single run, filing the highest-scored ones first
+# and holding the rest for a later run.
+max_per_run = 25
+
 [state]
 db_path = "state/scout.db"
 candidates_path = "data/candidates.jsonl"

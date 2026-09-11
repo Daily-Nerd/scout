@@ -32,6 +32,7 @@ def test_repo_config_loads():
     assert config.tiering.list_penalty_weight == 3.0
     assert "awesome" in config.tiering.list_words
     assert config.tiering.tree_max_per_run == 300
+    assert config.filing.max_per_run == 25
 
 
 def test_terms_match_is_case_insensitive():
@@ -62,6 +63,7 @@ def test_missing_table_uses_defaults(tmp_path):
         "awesome", "list", "curated", "collection", "resources", "roundup",
     ]
     assert config.tiering.tree_max_per_run == 300
+    assert config.filing.max_per_run == 25
 
 
 def test_non_table_section_raises(tmp_path):
@@ -69,3 +71,10 @@ def test_non_table_section_raises(tmp_path):
     path.write_text('github = "nope"\n')
     with pytest.raises(ValueError):
         load(path)
+
+
+def test_filing_section_overrides_max_per_run(tmp_path):
+    path = tmp_path / "scout.toml"
+    path.write_text("[filing]\nmax_per_run = 10\n")
+    config = load(path)
+    assert config.filing.max_per_run == 10

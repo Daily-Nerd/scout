@@ -96,6 +96,11 @@ class TieringConfig:
 
 
 @dataclass
+class FilingConfig:
+    max_per_run: int = 25
+
+
+@dataclass
 class StateConfig:
     db_path: Path = Path("state/scout.db")
     candidates_path: Path = Path("data/candidates.jsonl")
@@ -110,6 +115,7 @@ class Config:
     atlas: AtlasConfig
     issues: IssuesConfig
     tiering: TieringConfig
+    filing: FilingConfig
     state: StateConfig
     path: Path
 
@@ -135,6 +141,7 @@ def load(path: str | Path) -> Config:
     atlas = _section(data, "atlas")
     issues = _section(data, "issues")
     tiering = _section(data, "tiering")
+    filing = _section(data, "filing")
     state = _section(data, "state")
 
     return Config(
@@ -184,6 +191,9 @@ def load(path: str | Path) -> Config:
             list_penalty_weight=float(tiering.get("list_penalty_weight", 3)),
             list_words=list(tiering.get("list_words", _DEFAULT_LIST_WORDS)),
             tree_max_per_run=int(tiering.get("tree_max_per_run", 300)),
+        ),
+        filing=FilingConfig(
+            max_per_run=int(filing.get("max_per_run", 25)),
         ),
         state=StateConfig(
             db_path=Path(state.get("db_path", "state/scout.db")),

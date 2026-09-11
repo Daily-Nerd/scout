@@ -330,6 +330,23 @@ def _cmd_run(args: argparse.Namespace, config: Config, store: Store) -> int:
     with log_path.open("a") as fh:
         fh.write(json.dumps(entry) + "\n")
 
+    def _score_of(repo: str) -> float:
+        score = outcome.scores.get(repo)
+        return score.score if score is not None else 0.0
+
+    filed_repos = [
+        result.repo for result in outcome.results
+        if result.status in (issues_mod.STATUS_FILED, issues_mod.STATUS_DRY_RUN)
+    ]
+    held_repos = sorted(
+        (
+            result.repo for result in outcome.results
+            if result.status == issues_mod.STATUS_SKIPPED
+            and result.reason == issues_mod.REASON_HELD
+        ),
+        key=lambda repo: (-_score_of(repo), repo),
+    )
+
     report = report_mod.RunReport(
         queries=_query_counts(candidates),
         seen=len(candidates),
@@ -337,6 +354,8 @@ def _cmd_run(args: argparse.Namespace, config: Config, store: Store) -> int:
         dropped=_drop_counts(drops, outcome),
         scores=outcome.scores,
         candidates={candidate.repo: candidate for candidate in outcome.kept},
+        filed=filed_repos,
+        held=held_repos,
     )
     report_path = report_mod.write_report(report, config.state.reports_path)
 

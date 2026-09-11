@@ -29,6 +29,8 @@ class RunReport:
     dropped: dict[str, list[str]] = field(default_factory=dict)
     scores: dict[str, TierScore] = field(default_factory=dict)
     candidates: dict[str, Candidate] = field(default_factory=dict)
+    filed: list[str] = field(default_factory=list)
+    held: list[str] = field(default_factory=list)
 
 
 def _one_line(description: str) -> str:
@@ -78,6 +80,11 @@ def render_report(report: RunReport, ran_at: datetime | None = None) -> str:
         lines.append(f"- {tier.upper()}: {histogram.get(tier, 0)}")
     partial_count = sum(1 for score in report.scores.values() if score.absent)
     lines.append(f"- scored with absent components: {partial_count}")
+
+    lines.extend(["", "## Filing", "", f"- would file: {len(report.filed)}"])
+    lines.append(f"- held back by max_per_run: {len(report.held)}")
+    for repo in report.held:
+        lines.append(f"  - {repo}")
 
     ranked = sorted(report.scores.values(), key=lambda s: (-s.score, s.repo))
     lines.extend(["", f"## Top {TOP_N} by score", ""])

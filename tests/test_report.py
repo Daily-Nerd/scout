@@ -96,6 +96,35 @@ def test_empty_report_renders_without_error():
     text = render_report(RunReport(), RAN_AT)
     assert "## Candidates seen: 0" in text
     assert "- scored with absent components: 0" in text
+    assert "- would file: 0" in text
+    assert "- held back by max_per_run: 0" in text
+    assert "\u2014" not in text
+
+
+def test_filing_section_lists_counts_and_held_repos_in_score_order():
+    report = RunReport(
+        seen=3,
+        scores={
+            "alice/memorymesh": score("alice/memorymesh", 9.5, "a"),
+            "bob/context-store": score("bob/context-store", 6.0, "b"),
+            "carol/tinymem": score("carol/tinymem", 2.0, "c"),
+        },
+        candidates={
+            "alice/memorymesh": candidate("alice/memorymesh"),
+            "bob/context-store": candidate("bob/context-store"),
+            "carol/tinymem": candidate("carol/tinymem"),
+        },
+        filed=["alice/memorymesh"],
+        held=["carol/tinymem", "bob/context-store"],
+    )
+    text = render_report(report, RAN_AT)
+    assert "## Filing" in text
+    assert "- would file: 1" in text
+    assert "- held back by max_per_run: 2" in text
+    section = text[text.index("## Filing"):]
+    carol_index = section.index("carol/tinymem")
+    bob_index = section.index("bob/context-store")
+    assert carol_index < bob_index
     assert "\u2014" not in text
 
 

@@ -5,6 +5,7 @@ import pytest
 from scout.config import Config, load
 from scout.github_search import TokenMissingError
 from scout.issues import (
+    REASON_HELD,
     STATUS_DRY_RUN,
     STATUS_FILED,
     STATUS_SKIPPED,
@@ -48,6 +49,29 @@ def load_config(tmp_path) -> Config:
     path = tmp_path / "scout.toml"
     path.write_text(DEFAULT_CONFIG.format(db_path=tmp_path / "state" / "scout.db"))
     return load(path)
+
+
+def load_config_with_cap(tmp_path, cap: int) -> Config:
+    path = tmp_path / "scout.toml"
+    path.write_text(
+        DEFAULT_CONFIG.format(db_path=tmp_path / "state" / "scout.db")
+        + f"\n[filing]\nmax_per_run = {cap}\n"
+    )
+    return load(path)
+
+
+def scored_candidate(repo: str) -> Candidate:
+    return Candidate(
+        repo=repo,
+        source="github",
+        source_url=f"https://github.com/{repo}",
+        matched_terms=["topic:agent-memory"],
+        description="agent memory",
+        stars=5,
+        pushed_at="2026-09-08T00:00:00Z",
+        license="MIT",
+        html_url=f"https://github.com/{repo}",
+    )
 
 
 def reddit_candidate() -> Candidate:
@@ -238,6 +262,71 @@ def test_tier_c_candidates_are_not_filed(tmp_path):
     assert results[0].status == STATUS_SKIPPED
     assert results[0].reason == "tier C"
     assert session.posts == []
+
+
+def test_cap_limits_dry_run_to_top_scores_and_holds_the_rest(tmp_path):
+    candidates = [scored_candidate(f"org/repo{i:02d}") for i in range(30)]
+    tiers = {c.repo: tier(c.repo, c.repo, float(i), "a") for i, c in enumerate(candidates)}
+    with Store(tmp_path / "state.db") as store:
+        results = file_candidates(
+            load_config_with_cap(tmp_path, 25), store, candidates,
+            apply=False, token=None, session=FakeSession(),
+            tiers=tiers,
+        )
+    filed = {r.repo for r in results if r.status == STATUS_DRY_RUN}
+    held = {r.repo for r in results if r.status == STATUS_SKIPPED and r.reason == REASON_HELD}
+    assert len(filed) == 25
+    assert len(held) == 5
+    # scores 0..4 are the five lowest, so they are the ones held back
+    assert held == {f"org/repo{i:02d}" for i in range(5)}
+
+
+def test_cap_limits_apply_run_the_same_as_dry_run(tmp_path):
+    candidates = [scored_candidate(f"org/repo{i:02d}") for i in range(3)]
+    tiers = {c.repo: tier(c.repo, c.repo, float(i), "a") for i, c in enumerate(candidates)}
+    session = FakeSession()
+    with Store(tmp_path / "state.db") as store:
+        results = file_candidates(
+            load_config_with_cap(tmp_path, 2), store, candidates,
+            apply=True, token="t", session=session,
+            tiers=tiers,
+        )
+    filed = [r.repo for r in results if r.status == STATUS_FILED]
+    held = [r.repo for r in results if r.reason == REASON_HELD]
+    assert filed == ["org/repo01", "org/repo02"]
+    assert held == ["org/repo00"]
+    assert len(session.posts) == 2
+
+
+def test_cap_ties_are_broken_by_repo_name(tmp_path):
+    candidates = [
+        scored_candidate("zeta/repo"),
+        scored_candidate("alpha/repo"),
+        scored_candidate("mid/repo"),
+    ]
+    tiers = {c.repo: tier(c.repo, c.repo, 5.0, "a") for c in candidates}
+    with Store(tmp_path / "state.db") as store:
+        results = file_candidates(
+            load_config_with_cap(tmp_path, 2), store, candidates,
+            apply=False, token=None, session=FakeSession(),
+            tiers=tiers,
+        )
+    filed = {r.repo for r in results if r.status == STATUS_DRY_RUN}
+    held = {r.repo for r in results if r.reason == REASON_HELD}
+    assert filed == {"alpha/repo", "mid/repo"}
+    assert held == {"zeta/repo"}
+
+
+def test_cap_zero_files_nothing(tmp_path):
+    candidates = [scored_candidate(f"org/repo{i:02d}") for i in range(3)]
+    tiers = {c.repo: tier(c.repo, c.repo, float(i), "a") for i, c in enumerate(candidates)}
+    with Store(tmp_path / "state.db") as store:
+        results = file_candidates(
+            load_config_with_cap(tmp_path, 0), store, candidates,
+            apply=False, token=None, session=FakeSession(),
+            tiers=tiers,
+        )
+    assert all(r.status == STATUS_SKIPPED and r.reason == REASON_HELD for r in results)
 
 
 def test_existing_issue_map_is_trusted_without_a_second_walk(tmp_path):
