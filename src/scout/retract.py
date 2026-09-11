@@ -19,8 +19,9 @@ import requests
 
 from .config import Config
 from .github_search import TOKEN_ENV, TokenMissingError
-from .issues import _headers
+from .issues import _CANDIDATE_TITLE_RE, _headers
 from .rate_limit import github_rate_limited, request_with_backoff
+from .store import Store
 
 API = "https://api.github.com"
 RETRACTED_LABEL = "scout:retracted"
@@ -41,6 +42,9 @@ The filter is fixed: the phrase is quoted, the created window is gone, and
 every hit passes the same term gate the Reddit source always ran. Issues
 filed after this one come from the fixed pipeline, and a person still
 decides each one.
+
+A retracted issue means scout withdrew its own filing. It does not mean
+the atlas looked at the project or rejected it.
 """
 
 
@@ -136,19 +140,28 @@ def _ensure_retracted_label(
     create.raise_for_status()
 
 
+def _repo_from_title(title: str) -> str | None:
+    match = _CANDIDATE_TITLE_RE.search(title)
+    return match.group(1) if match else None
+
+
 def retract(
     config: Config,
     *,
     apply: bool,
     token: str | None,
     session: requests.Session | None = None,
+    store: Store | None = None,
     sleep=time.sleep,
 ) -> RetractResult:
     """Close every open candidate issue under scout:retracted.
 
     Dry by default: returns what would close. With apply, writes at most
     one per config.issues.request_interval_seconds, then files and pins the
-    explainer issue.
+    explainer issue. When a store is given, every issue closed this way
+    also gets its history row marked discovery=retracted: the repo is
+    read from the issue title when it carries one, and looked up in
+    History by issue number otherwise.
     """
     if apply and not token:
         raise TokenMissingError(
@@ -166,7 +179,7 @@ def retract(
 
     _ensure_retracted_label(session, config, headers, sleep=sleep)
     last_write_at = 0.0
-    for number, _title, labels in issues:
+    for number, title, labels in issues:
         wait = config.issues.request_interval_seconds - (
             time.monotonic() - last_write_at
         )
@@ -188,6 +201,12 @@ def retract(
         response.raise_for_status()
         last_write_at = time.monotonic()
         result.closed += 1
+        if store is not None:
+            repo = _repo_from_title(title)
+            if repo is None and store.history is not None:
+                repo = store.history.repo_for_issue(number)
+            if repo:
+                store.mark_retracted(repo)
 
     wait = config.issues.request_interval_seconds - (
         time.monotonic() - last_write_at

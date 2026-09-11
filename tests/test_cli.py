@@ -105,7 +105,9 @@ def wired(tmp_path, monkeypatch):
             score=9.0,
             tier="a",
             label="scout:tier-a",
-            components={"stars": 9.0},
+            components={"stars": cli.tiering_mod.Component(input=100, value=9.0)},
+            absent=[],
+            scored_at="2026-09-11T00:00:00Z",
         )
 
     def fake_file(config, store, cands, *, apply, token, session=None, **kwargs):
@@ -354,3 +356,55 @@ def test_check_then_file_walks_target_issues_once_and_shares(tmp_path, monkeypat
     assert shared["file"] == {"other/repo": 9}
     assert [c.repo for c in outcome.kept] == ["new/hot"]
     store.close()
+
+
+def test_run_dry_mode_persists_scores_and_known_repos(wired, tmp_path):
+    config_path, candidates, _ = wired
+    candidates.append(
+        Candidate(repo="known/repo", source="reddit",
+                  source_url="https://www.reddit.com/r/x/comments/1/y/")
+    )
+    assert main(["run", "--config", str(config_path)]) == 0
+
+    history_path = tmp_path / "data" / "candidates.jsonl"
+    rows = {
+        json.loads(line)["repo"]: json.loads(line)
+        for line in history_path.read_text().splitlines()
+        if json.loads(line).get("kind") == "repo"
+    }
+    assert rows["new/hot"]["score"] == 9.0
+    assert rows["new/hot"]["tier"] == "a"
+    assert rows["new/hot"]["assessment"] == "tier-a"
+    assert rows["known/repo"]["assessment"] == "atlas-known"
+    assert "score" not in rows["known/repo"]
+
+
+def test_repair_flags_title_only_and_prints_counts(wired, capsys):
+    config_path, _, _ = wired
+    assert main(["repair", "--config", str(config_path)]) == 0
+    out = capsys.readouterr().out
+    assert "flagged 0 title-only history rows" in out
+    assert "repaired 0 rows: discovery" in out
+    assert "repaired 0 rows: assessment" in out
+    assert "repaired 0 rows: readme_bytes" in out
+
+
+def test_repair_accepts_retracted_through(tmp_path, monkeypatch):
+    config_path = write_config(tmp_path)
+    history_path = tmp_path / "data" / "candidates.jsonl"
+    from scout.store import Store
+
+    with Store(tmp_path / "state" / "scout.db", history_path) as store:
+        # a row with a candidate payload, so mark_title_only_rows leaves it alone
+        store.record_candidates([github_candidate("owner/old")])
+        store.history.mark_issue("owner/old", 5)
+        del store.history.repos["owner/old"]["discovery"]
+
+    monkeypatch.delenv("SCOUT_GITHUB_TOKEN", raising=False)
+    assert main([
+        "repair", "--config", str(config_path), "--retracted-through", "100",
+    ]) == 0
+
+    restored = Store(tmp_path / "state" / "scout.db", history_path)
+    assert restored.history.repos["owner/old"]["discovery"] == "retracted"
+    restored.close()

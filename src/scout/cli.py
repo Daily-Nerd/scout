@@ -75,6 +75,12 @@ def build_parser() -> argparse.ArgumentParser:
         "repair", help="flag history rows that carry no candidate payload"
     )
     _add_common(p_repair)
+    p_repair.add_argument(
+        "--retracted-through",
+        type=int,
+        default=None,
+        help="issue numbers at or below this were closed in a retraction",
+    )
 
     return parser
 
@@ -173,6 +179,11 @@ def _check_then_file(
         )
         for candidate in kept
     }
+    for repo, score in scores.items():
+        store.record_score(repo, score)
+    for repos in known_reasons.values():
+        for repo in repos:
+            store.mark_known(repo)
     results = issues_mod.file_candidates(
         config, store, kept, apply=apply, token=token, session=session,
         tiers=scores, existing=existing,
@@ -360,7 +371,9 @@ def _drop_counts(
 def _cmd_retract(args: argparse.Namespace, config: Config, store: Store) -> int:
     token = _token()
     try:
-        result = retract_mod.retract(config, apply=args.apply, token=token)
+        result = retract_mod.retract(
+            config, apply=args.apply, token=token, store=store
+        )
     except retract_mod.TokenMissingError as exc:
         print(f"retract: {exc}", file=sys.stderr)
         return 1
@@ -382,6 +395,9 @@ def _cmd_retract(args: argparse.Namespace, config: Config, store: Store) -> int:
 def _cmd_repair(args: argparse.Namespace, config: Config, store: Store) -> int:
     marked = store.mark_title_only_rows()
     print(f"flagged {marked} title-only history rows")
+    counts = store.repair_rows(retracted_through=args.retracted_through)
+    for key in ("discovery", "assessment", "readme_bytes"):
+        print(f"repaired {counts.get(key, 0)} rows: {key}")
     return 0
 
 
