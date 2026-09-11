@@ -4,14 +4,47 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, fields
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .models import Candidate
+
+if TYPE_CHECKING:
+    from .tiering import TierScore
+
+_REFRESH_DISCOVERY = ("seen", "filed", "title_only")
 
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _parse_iso(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+def _new_row(repo: str, now: str | None = None) -> dict:
+    """A fresh repo row with the defaults every writer agrees on.
+
+    Whichever method first touches a repo creates its row through here,
+    so a row scored, flagged or refreshed before it was ever scanned
+    still carries `status` and `discovery` like a scanned one does.
+    """
+    return {
+        "kind": "repo",
+        "repo": repo,
+        "first_seen_at": now or _now(),
+        "sources": [],
+        "status": "pending",
+        "discovery": "seen",
+    }
 
 
 class History:
@@ -68,16 +101,7 @@ class History:
 
     def mark_repo_seen(self, repo: str, source: str) -> None:
         now = _now()
-        row = self.repos.setdefault(
-            repo,
-            {
-                "kind": "repo",
-                "repo": repo,
-                "first_seen_at": now,
-                "sources": [],
-                "status": "pending",
-            },
-        )
+        row = self.repos.setdefault(repo, _new_row(repo, now))
         row["last_seen_at"] = now
         if source not in row.setdefault("sources", []):
             row["sources"].append(source)
@@ -89,21 +113,66 @@ class History:
         )
 
     def record_candidates(self, candidates: list[Candidate]) -> None:
+        """Store each candidate as its row's latest payload.
+
+        A GitHub search hit carries the repo's real metadata (stars,
+        pushed_at, topics), so it counts as a metadata fetch and stamps
+        `latest.fetched_at` with the same moment as `last_seen_at`. A
+        Reddit hit only knows what the post said, so it leaves the stamp
+        off and the row stays due for a refresh.
+        """
         for candidate in candidates:
             self.mark_repo_seen(candidate.repo, candidate.source)
             row = self.repos[candidate.repo]
             row["latest"] = asdict(candidate)
+            if candidate.source == "github":
+                row["latest"]["fetched_at"] = row["last_seen_at"]
             source_urls = row.setdefault("source_urls", [])
             if candidate.source_url and candidate.source_url not in source_urls:
                 source_urls.append(candidate.source_url)
 
     def mark_issue(self, repo: str, issue_number: int) -> None:
-        row = self.repos.setdefault(
-            repo,
-            {"kind": "repo", "repo": repo, "first_seen_at": _now(), "sources": []},
-        )
+        row = self.repos.setdefault(repo, _new_row(repo))
         row["issue_number"] = issue_number
         row["status"] = "filed"
+        row["discovery"] = "filed"
+
+    def record_score(self, repo: str, score: TierScore) -> None:
+        """Persist a TierScore onto the repo's row.
+
+        Score and each component value are rounded to 4 decimals. A
+        component's input is stored as-is (lists stay lists) since it must
+        already be JSON-serializable by the time it reaches a TierScore.
+        """
+        row = self.repos.setdefault(repo, _new_row(repo))
+        row["score"] = round(score.score, 4)
+        row["tier"] = score.tier
+        row["components"] = {
+            name: {
+                "input": component.input,
+                "value": None if component.value is None else round(component.value, 4),
+            }
+            for name, component in score.components.items()
+        }
+        row["absent_components"] = list(score.absent)
+        row["scored_at"] = score.scored_at
+        row["assessment"] = f"tier-{score.tier}"
+
+    def mark_known(self, repo: str) -> None:
+        """Flag a repo the atlas already knows about. Known repos are not scored."""
+        row = self.repos.setdefault(repo, _new_row(repo))
+        row["assessment"] = "atlas-known"
+
+    def mark_retracted(self, repo: str) -> None:
+        row = self.repos.setdefault(repo, _new_row(repo))
+        row["discovery"] = "retracted"
+
+    def repo_for_issue(self, issue_number: int) -> str | None:
+        """Reverse lookup: the repo whose row carries this issue number."""
+        for repo, row in self.repos.items():
+            if row.get("issue_number") == issue_number:
+                return repo
+        return None
 
     def mark_issues_migrated(self) -> None:
         self.issues_migrated = True
@@ -130,6 +199,120 @@ class History:
         if isinstance(latest, dict):
             latest["readme_bytes"] = size
 
+    def tree_signals(self, repo: str) -> tuple[bool, int] | None:
+        """Cached (has_tests, source_files) from the latest payload, or None
+        if the git tree has not been fetched for this repo yet."""
+        row = self.repos.get(repo)
+        latest = row.get("latest") if row else None
+        if isinstance(latest, dict) and "tree_tests" in latest:
+            return bool(latest["tree_tests"]), int(latest.get("tree_source_files", 0))
+        return None
+
+    def has_tree_signals(self, repo: str) -> bool:
+        """True once the git tree was fetched, even for an empty repo."""
+        row = self.repos.get(repo)
+        latest = row.get("latest") if row else None
+        return isinstance(latest, dict) and "tree_tests" in latest
+
+    def update_tree_signals(
+        self, repo: str, has_tests: bool, source_files: int, fetched_at: str
+    ) -> None:
+        row = self.repos.get(repo)
+        latest = row.get("latest") if row else None
+        if isinstance(latest, dict):
+            latest["tree_tests"] = has_tests
+            latest["tree_source_files"] = source_files
+            latest["tree_fetched_at"] = fetched_at
+
+    @staticmethod
+    def _refresh_freshness(row: dict) -> datetime | None:
+        """The later of latest.fetched_at and refresh_attempted_at as a
+        datetime, or None if neither is set or parseable.
+
+        scored_at is deliberately not part of this: scoring runs every
+        run from the cached payload, so it says nothing about how old
+        the metadata is. A failed attempt (404, upstream error, or a
+        label patch that did not go through) still counts: it must not
+        make a dead row sort first forever. The two stamps are written
+        in different ISO shapes (isoformat with an offset, and
+        "%Y-%m-%dT%H:%M:%SZ"), so they are parsed rather than compared
+        as strings."""
+        latest = row.get("latest")
+        fetched_at = latest.get("fetched_at") if isinstance(latest, dict) else None
+        parsed = [
+            _parse_iso(stamp)
+            for stamp in (fetched_at, row.get("refresh_attempted_at"))
+            if isinstance(stamp, str) and stamp
+        ]
+        known = [stamp for stamp in parsed if stamp is not None]
+        return max(known) if known else None
+
+    def rows_due_for_refresh(self, now: datetime, days: int, limit: int) -> list[str]:
+        """Repo rows overdue for a metadata refresh, oldest first.
+
+        A row is due when its discovery is seen, filed or title_only, its
+        assessment is not atlas-known, and its freshness (the later of
+        latest.fetched_at and refresh_attempted_at) is absent or older
+        than `days`. An unparseable stamp counts as absent. Results are
+        ordered by that freshness then last_seen_at, both ascending (a
+        missing value sorts first), and capped at `limit`.
+        """
+        cutoff = now - timedelta(days=days)
+        never = datetime.min.replace(tzinfo=UTC)
+        due: list[str] = []
+        for repo, row in self.repos.items():
+            if row.get("kind") != "repo":
+                continue
+            if row.get("discovery") not in _REFRESH_DISCOVERY:
+                continue
+            if row.get("assessment") == "atlas-known":
+                continue
+            freshness = self._refresh_freshness(row)
+            if freshness is not None and freshness >= cutoff:
+                continue
+            due.append(repo)
+        due.sort(key=lambda repo: (
+            self._refresh_freshness(self.repos[repo]) or never,
+            self.repos[repo].get("last_seen_at") or "",
+        ))
+        return due[:limit]
+
+    def mark_refresh_attempt(
+        self, repo: str, attempted_at: str, *, error: str | None = None
+    ) -> None:
+        """Stamp a row with the outcome of one refresh attempt.
+
+        `refresh_attempted_at` is set whether the attempt succeeded or
+        failed, so a permanently-404ing repo still advances its
+        freshness stamp instead of starving the queue by always sorting
+        first. `refresh_error` (a short string such as "404", "500" or
+        "label patch failed") is set on failure and removed entirely on
+        success, so a clean row carries no error key at all.
+        """
+        row = self.repos.setdefault(repo, _new_row(repo))
+        row["refresh_attempted_at"] = attempted_at
+        if error:
+            row["refresh_error"] = error
+        else:
+            row.pop("refresh_error", None)
+
+    def update_latest(
+        self, repo: str, *, fetched_at: str | None = None, **payload: object
+    ) -> None:
+        """Merge freshly fetched fields into a row's latest payload,
+        creating it first if the row has none yet (a title_only row
+        rebuilt from an issue title, or one seen before latest was
+        recorded). Always stamps `latest.fetched_at`, with `fetched_at`
+        when given (refresh passes its run stamp) and the current time
+        otherwise, so the row leaves the refresh queue."""
+        row = self.repos.setdefault(repo, _new_row(repo))
+        latest = row.get("latest")
+        if not isinstance(latest, dict):
+            latest = {"repo": repo}
+            row["latest"] = latest
+        latest.update(payload)
+        latest["fetched_at"] = fetched_at or _now()
+
     def mark_title_only_rows(self) -> int:
         """Flag repo rows that carry no candidate payload.
 
@@ -141,8 +324,47 @@ class History:
         for row in self.repos.values():
             if not isinstance(row.get("latest"), dict) and not row.get("title_only"):
                 row["title_only"] = True
+                if not row.get("issue_number"):
+                    row["discovery"] = "title_only"
                 marked += 1
         return marked
+
+    def repair_rows(self, retracted_through: int | None = None) -> dict[str, int]:
+        """Backfill discovery and assessment on rows written before those
+        fields existed, and fix the readme_bytes 404-as-null cache bug.
+
+        Never touches a field a row already carries; existing data always
+        wins over a guess. Returns how many rows changed per field.
+        """
+        counts = {"discovery": 0, "assessment": 0, "readme_bytes": 0}
+        for row in self.repos.values():
+            if row.get("kind") != "repo":
+                continue
+            if "discovery" not in row:
+                # An issue number outranks the title_only flag: every row
+                # filed before the retraction was also rebuilt from its
+                # issue title, and the flag only says where the row came
+                # from, not what scout did with it.
+                issue_number = row.get("issue_number")
+                if issue_number and retracted_through is not None \
+                        and issue_number <= retracted_through:
+                    row["discovery"] = "retracted"
+                elif issue_number:
+                    row["discovery"] = "filed"
+                elif row.get("title_only"):
+                    row["discovery"] = "title_only"
+                else:
+                    row["discovery"] = "seen"
+                counts["discovery"] += 1
+            if "assessment" not in row:
+                row["assessment"] = "none"
+                counts["assessment"] += 1
+            latest = row.get("latest")
+            if isinstance(latest, dict) and "readme_bytes" in latest \
+                    and latest["readme_bytes"] is None:
+                latest["readme_bytes"] = 0
+                counts["readme_bytes"] += 1
+        return counts
 
     def write(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

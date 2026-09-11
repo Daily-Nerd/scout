@@ -25,10 +25,12 @@ API = "https://api.github.com"
 STATUS_FILED = "filed"
 STATUS_SKIPPED = "skipped"
 STATUS_DRY_RUN = "dry-run"
+REASON_HELD = "held: over max_per_run"
 LABEL_COLOR = "1d76db"
 TIER_LABEL_COLORS = {"scout:tier-a": "0e8a16", "scout:tier-b": "1d76db"}
 
 _CANDIDATE_TITLE_RE = re.compile(r"candidate:\s*([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)")
+_TIER_LABEL_RE = re.compile(r"^scout:tier-[abc]$")
 
 
 @dataclass
@@ -59,7 +61,10 @@ def render_body(candidate: Candidate, tier: TierScore | None = None) -> str:
         f"License: {candidate.license or 'none detected'}",
     ]
     if tier is not None:
-        lines.append(f"Tier: {tier.tier.upper()} (score {tier.score:.2f})")
+        tier_line = f"Tier: {tier.tier.upper()} (score {tier.score:.2f})"
+        if tier.absent:
+            tier_line += f" (partial: {', '.join(tier.absent)})"
+        lines.append(tier_line)
         lines.append(f"Score components: {component_summary(tier)}")
     if candidate.source == "reddit":
         author = f" by {candidate.author}" if candidate.author else ""
@@ -186,6 +191,56 @@ def _ensure_label(
     create.raise_for_status()
 
 
+def update_tier_label(
+    config: Config,
+    session: requests.Session,
+    token: str | None,
+    issue_number: int,
+    old_label: str,
+    new_label: str,
+    *,
+    apply: bool,
+    sleep=time.sleep,
+) -> None:
+    """Swap a filed issue's tier label after a refresh changes its tier.
+
+    Fetches the issue's current labels, drops any scout:tier-* label
+    (normally just old_label) and adds new_label, then PATCHes the whole
+    label list back. Nothing else on the issue is touched. In dry mode
+    nothing is fetched or written; the change that would happen is only
+    printed.
+    """
+    if not apply:
+        print(f"would relabel issue #{issue_number}: {old_label} -> {new_label}")
+        return
+    headers = _headers(token)
+    response = request_with_backoff(
+        lambda: session.get(
+            f"{API}/repos/{config.issues.target_repo}/issues/{issue_number}",
+            headers=headers, timeout=30,
+        ),
+        should_retry=github_rate_limited,
+        sleep=sleep,
+        max_retries=config.issues.max_rate_limit_retries,
+    )
+    response.raise_for_status()
+    current = [label.get("name", "") for label in response.json().get("labels", [])]
+    kept = [name for name in current if not _TIER_LABEL_RE.match(name)]
+    updated = [*kept, new_label]
+    patch = request_with_backoff(
+        lambda: session.patch(
+            f"{API}/repos/{config.issues.target_repo}/issues/{issue_number}",
+            headers=headers,
+            json={"labels": updated},
+            timeout=30,
+        ),
+        should_retry=github_rate_limited,
+        sleep=sleep,
+        max_retries=config.issues.max_rate_limit_retries,
+    )
+    patch.raise_for_status()
+
+
 def file_candidates(
     config: Config,
     store: Store,
@@ -206,6 +261,12 @@ def file_candidates(
     ``existing`` (repo -> issue number) is passed it is trusted as the
     target-repo scan and no issue walk is done here; callers that also
     need the map for the atlas check should fetch it once and share it.
+
+    Once tier-C and already-filed candidates are out, the remainder is
+    ranked by score (highest first, ties broken by repo name) and only
+    ``config.filing.max_per_run`` of them are filed; the rest stay pending
+    with reason REASON_HELD. This holds in dry runs too, so a dry run
+    prints exactly what an apply run would file.
     """
     if apply and not token:
         raise TokenMissingError(
@@ -222,6 +283,19 @@ def file_candidates(
     if existing:
         for repo, number in existing.items():
             store.mark_filed(repo, number)
+
+    def _score(candidate: Candidate) -> float:
+        tier = tiers.get(candidate.repo) if tiers else None
+        return tier.score if tier is not None else 0.0
+
+    eligible = [
+        candidate
+        for candidate in candidates
+        if not (tiers and tiers.get(candidate.repo) and tiers[candidate.repo].tier == "c")
+        and not store.is_filed(candidate.repo)
+    ]
+    ranked = sorted(eligible, key=lambda candidate: (-_score(candidate), candidate.repo))
+    held_repos = {candidate.repo for candidate in ranked[config.filing.max_per_run:]}
 
     results: list[FiledIssue] = []
     labels_ready: set[str] = set()
@@ -244,6 +318,15 @@ def file_candidates(
                     status=STATUS_SKIPPED,
                     issue_number=store.filed_issue_number(candidate.repo),
                     reason="issue already filed",
+                )
+            )
+            continue
+        if candidate.repo in held_repos:
+            results.append(
+                FiledIssue(
+                    repo=candidate.repo,
+                    status=STATUS_SKIPPED,
+                    reason=REASON_HELD,
                 )
             )
             continue

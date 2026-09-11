@@ -10,8 +10,12 @@ from __future__ import annotations
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .history import History
+
+if TYPE_CHECKING:
+    from .tiering import TierScore
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS seen_posts (
@@ -137,6 +141,20 @@ class Store:
         if self.history is not None:
             self.history.update_readme_size(repo, size)
 
+    def tree_signals(self, repo: str) -> tuple[bool, int] | None:
+        if self.history is None:
+            return None
+        return self.history.tree_signals(repo)
+
+    def has_tree_signals(self, repo: str) -> bool:
+        return self.history is not None and self.history.has_tree_signals(repo)
+
+    def save_tree_signals(
+        self, repo: str, has_tests: bool, source_files: int, fetched_at: str
+    ) -> None:
+        if self.history is not None:
+            self.history.update_tree_signals(repo, has_tests, source_files, fetched_at)
+
     @property
     def issues_migrated(self) -> bool:
         return self.history is not None and self.history.issues_migrated
@@ -149,3 +167,39 @@ class Store:
         if self.history is None:
             return 0
         return self.history.mark_title_only_rows()
+
+    # scoring and assessment -------------------------------------------
+
+    def record_score(self, repo: str, score: TierScore) -> None:
+        if self.history is not None:
+            self.history.record_score(repo, score)
+
+    def mark_known(self, repo: str) -> None:
+        if self.history is not None:
+            self.history.mark_known(repo)
+
+    def mark_retracted(self, repo: str) -> None:
+        if self.history is not None:
+            self.history.mark_retracted(repo)
+
+    def repair_rows(self, retracted_through: int | None = None) -> dict[str, int]:
+        if self.history is None:
+            return {}
+        return self.history.repair_rows(retracted_through)
+
+    # metadata refresh -----------------------------------------------------
+
+    def rows_due_for_refresh(self, now: datetime, days: int, limit: int) -> list[str]:
+        if self.history is None:
+            return []
+        return self.history.rows_due_for_refresh(now, days, limit)
+
+    def update_latest(self, repo: str, **payload: object) -> None:
+        if self.history is not None:
+            self.history.update_latest(repo, **payload)
+
+    def mark_refresh_attempt(
+        self, repo: str, attempted_at: str, *, error: str | None = None
+    ) -> None:
+        if self.history is not None:
+            self.history.mark_refresh_attempt(repo, attempted_at, error=error)

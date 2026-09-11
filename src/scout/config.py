@@ -62,6 +62,15 @@ class IssuesConfig:
     max_rate_limit_retries: int = 3
 
 
+_DEFAULT_SOURCE_EXTENSIONS = [
+    ".py", ".ts", ".tsx", ".js", ".go", ".rs", ".java", ".kt",
+    ".rb", ".cs", ".cpp", ".c", ".swift",
+]
+_DEFAULT_LIST_WORDS = [
+    "awesome", "list", "curated", "collection", "resources", "roundup",
+]
+
+
 @dataclass
 class TieringConfig:
     stars_weight: float = 2.0
@@ -75,6 +84,26 @@ class TieringConfig:
     density_weight: float = 3.0
     tier_a_min: float = 8.0
     tier_b_min: float = 5.0
+    tests_weight: float = 2.0
+    source_weight: float = 1.5
+    source_cap: int = 40
+    source_extensions: list[str] = field(
+        default_factory=lambda: list(_DEFAULT_SOURCE_EXTENSIONS)
+    )
+    list_penalty_weight: float = 3.0
+    list_words: list[str] = field(default_factory=lambda: list(_DEFAULT_LIST_WORDS))
+    tree_max_per_run: int = 300
+
+
+@dataclass
+class FilingConfig:
+    max_per_run: int = 25
+
+
+@dataclass
+class RefreshConfig:
+    days: int = 14
+    max_per_run: int = 50
 
 
 @dataclass
@@ -92,6 +121,8 @@ class Config:
     atlas: AtlasConfig
     issues: IssuesConfig
     tiering: TieringConfig
+    filing: FilingConfig
+    refresh: RefreshConfig
     state: StateConfig
     path: Path
 
@@ -117,6 +148,8 @@ def load(path: str | Path) -> Config:
     atlas = _section(data, "atlas")
     issues = _section(data, "issues")
     tiering = _section(data, "tiering")
+    filing = _section(data, "filing")
+    refresh = _section(data, "refresh")
     state = _section(data, "state")
 
     return Config(
@@ -157,6 +190,22 @@ def load(path: str | Path) -> Config:
             density_weight=float(tiering.get("density_weight", 3)),
             tier_a_min=float(tiering.get("tier_a_min", 8)),
             tier_b_min=float(tiering.get("tier_b_min", 5)),
+            tests_weight=float(tiering.get("tests_weight", 2)),
+            source_weight=float(tiering.get("source_weight", 1.5)),
+            source_cap=int(tiering.get("source_cap", 40)),
+            source_extensions=list(
+                tiering.get("source_extensions", _DEFAULT_SOURCE_EXTENSIONS)
+            ),
+            list_penalty_weight=float(tiering.get("list_penalty_weight", 3)),
+            list_words=list(tiering.get("list_words", _DEFAULT_LIST_WORDS)),
+            tree_max_per_run=int(tiering.get("tree_max_per_run", 300)),
+        ),
+        filing=FilingConfig(
+            max_per_run=int(filing.get("max_per_run", 25)),
+        ),
+        refresh=RefreshConfig(
+            days=int(refresh.get("days", 14)),
+            max_per_run=int(refresh.get("max_per_run", 50)),
         ),
         state=StateConfig(
             db_path=Path(state.get("db_path", "state/scout.db")),

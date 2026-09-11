@@ -19,6 +19,7 @@ from pathlib import Path
 
 from . import atlas as atlas_mod
 from . import github_search, issues as issues_mod, reddit, retract as retract_mod
+from . import refresh as refresh_mod
 from . import report as report_mod
 from . import tiering as tiering_mod
 from .config import Config, load
@@ -75,6 +76,12 @@ def build_parser() -> argparse.ArgumentParser:
         "repair", help="flag history rows that carry no candidate payload"
     )
     _add_common(p_repair)
+    p_repair.add_argument(
+        "--retracted-through",
+        type=int,
+        default=None,
+        help="issue numbers at or below this were closed in a retraction",
+    )
 
     return parser
 
@@ -167,12 +174,27 @@ def _check_then_file(
     readme_sizes = tiering_mod.collect_readme_sizes(
         config, store, kept, token=token, session=session
     )
-    scores = {
-        candidate.repo: tiering_mod.score_candidate(
-            config, candidate, readme_bytes=readme_sizes.get(candidate.repo)
+    tree_signals = tiering_mod.collect_tree_signals(
+        config, store, kept, token=token, session=session
+    )
+    scores = {}
+    for candidate in kept:
+        signals = tree_signals.get(candidate.repo)
+        tree_tests, tree_source_files = signals if signals else (None, None)
+        scores[candidate.repo] = tiering_mod.score_candidate(
+            config, candidate,
+            readme_bytes=readme_sizes.get(candidate.repo),
+            tree_tests=tree_tests,
+            tree_source_files=tree_source_files,
         )
-        for candidate in kept
-    }
+    for repo, score in scores.items():
+        store.record_score(repo, score)
+    # Only an atlas or archive hit means the atlas knows the project. A
+    # scout issue already filed (REASON_ISSUE) is scout's own doing and
+    # must not read as an atlas verdict, so that row keeps its assessment.
+    for reason in (atlas_mod.REASON_ATLAS, atlas_mod.REASON_ARCHIVE):
+        for repo in known_reasons.get(reason, []):
+            store.mark_known(repo)
     results = issues_mod.file_candidates(
         config, store, kept, apply=apply, token=token, session=session,
         tiers=scores, existing=existing,
@@ -312,6 +334,34 @@ def _cmd_run(args: argparse.Namespace, config: Config, store: Store) -> int:
     with log_path.open("a") as fh:
         fh.write(json.dumps(entry) + "\n")
 
+    def _score_of(repo: str) -> float:
+        score = outcome.scores.get(repo)
+        return score.score if score is not None else 0.0
+
+    filed_repos = [
+        result.repo for result in outcome.results
+        if result.status in (issues_mod.STATUS_FILED, issues_mod.STATUS_DRY_RUN)
+    ]
+    held_repos = sorted(
+        (
+            result.repo for result in outcome.results
+            if result.status == issues_mod.STATUS_SKIPPED
+            and result.reason == issues_mod.REASON_HELD
+        ),
+        key=lambda repo: (-_score_of(repo), repo),
+    )
+
+    # Filing is done by now; a network error inside refresh is reported as
+    # a failed pass rather than aborting the run and losing the report.
+    try:
+        refresh_outcome = refresh_mod.refresh(
+            config, store, token=token, apply=args.apply
+        )
+    except requests.RequestException as exc:
+        failure = f"refresh pass: {_request_error_label(exc)}"
+        print(failure, file=sys.stderr)
+        refresh_outcome = refresh_mod.RefreshOutcome(failed=[failure])
+
     report = report_mod.RunReport(
         queries=_query_counts(candidates),
         seen=len(candidates),
@@ -319,6 +369,11 @@ def _cmd_run(args: argparse.Namespace, config: Config, store: Store) -> int:
         dropped=_drop_counts(drops, outcome),
         scores=outcome.scores,
         candidates={candidate.repo: candidate for candidate in outcome.kept},
+        filed=filed_repos,
+        held=held_repos,
+        refreshed=len(refresh_outcome.refreshed),
+        tier_changes=refresh_outcome.tier_changes,
+        refresh_failed=refresh_outcome.failed,
     )
     report_path = report_mod.write_report(report, config.state.reports_path)
 
@@ -330,6 +385,15 @@ def _cmd_run(args: argparse.Namespace, config: Config, store: Store) -> int:
     print(f"run log: {log_path}")
     print(f"report: {report_path}")
     return 0
+
+
+def _request_error_label(exc: requests.RequestException) -> str:
+    """A short, stable label for a requests failure, for the run report."""
+    if isinstance(exc, requests.ConnectionError):
+        return "connection error"
+    if isinstance(exc, requests.Timeout):
+        return "timeout"
+    return "request error"
 
 
 def _query_counts(candidates: list[Candidate]) -> dict[str, int]:
@@ -360,7 +424,9 @@ def _drop_counts(
 def _cmd_retract(args: argparse.Namespace, config: Config, store: Store) -> int:
     token = _token()
     try:
-        result = retract_mod.retract(config, apply=args.apply, token=token)
+        result = retract_mod.retract(
+            config, apply=args.apply, token=token, store=store
+        )
     except retract_mod.TokenMissingError as exc:
         print(f"retract: {exc}", file=sys.stderr)
         return 1
@@ -382,6 +448,9 @@ def _cmd_retract(args: argparse.Namespace, config: Config, store: Store) -> int:
 def _cmd_repair(args: argparse.Namespace, config: Config, store: Store) -> int:
     marked = store.mark_title_only_rows()
     print(f"flagged {marked} title-only history rows")
+    counts = store.repair_rows(retracted_through=args.retracted_through)
+    for key in ("discovery", "assessment", "readme_bytes"):
+        print(f"repaired {counts.get(key, 0)} rows: {key}")
     return 0
 
 

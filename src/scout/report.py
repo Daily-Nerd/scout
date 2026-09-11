@@ -29,6 +29,11 @@ class RunReport:
     dropped: dict[str, list[str]] = field(default_factory=dict)
     scores: dict[str, TierScore] = field(default_factory=dict)
     candidates: dict[str, Candidate] = field(default_factory=dict)
+    filed: list[str] = field(default_factory=list)
+    held: list[str] = field(default_factory=list)
+    refreshed: int = 0
+    tier_changes: list[tuple[str, str, str]] = field(default_factory=list)
+    refresh_failed: list[str] = field(default_factory=list)
 
 
 def _one_line(description: str) -> str:
@@ -76,6 +81,21 @@ def render_report(report: RunReport, ran_at: datetime | None = None) -> str:
     lines.extend(["", "## Tier histogram", ""])
     for tier in (TIER_A, TIER_B, TIER_C):
         lines.append(f"- {tier.upper()}: {histogram.get(tier, 0)}")
+    partial_count = sum(1 for score in report.scores.values() if score.absent)
+    lines.append(f"- scored with absent components: {partial_count}")
+
+    lines.extend(["", "## Filing", "", f"- would file: {len(report.filed)}"])
+    lines.append(f"- held back by max_per_run: {len(report.held)}")
+    for repo in report.held:
+        lines.append(f"  - {repo}")
+
+    lines.extend(["", "## Refresh", "", f"- refreshed: {report.refreshed}"])
+    lines.append(f"- tier changes: {len(report.tier_changes)}")
+    for repo, old_tier, new_tier in report.tier_changes:
+        lines.append(f"  - {repo}: {old_tier.upper()} -> {new_tier.upper()}")
+    lines.append(f"- failed: {len(report.refresh_failed)}")
+    for repo in report.refresh_failed:
+        lines.append(f"  - {repo}")
 
     ranked = sorted(report.scores.values(), key=lambda s: (-s.score, s.repo))
     lines.extend(["", f"## Top {TOP_N} by score", ""])
@@ -83,10 +103,13 @@ def render_report(report: RunReport, ran_at: datetime | None = None) -> str:
         for rank, score in enumerate(ranked[:TOP_N], start=1):
             candidate = report.candidates.get(score.repo)
             description = _one_line(candidate.description if candidate else "")
-            lines.append(
+            line = (
                 f"{rank}. {score.repo} - {score.score:.2f} "
                 f"({score.label}) - {description}"
             )
+            if score.absent:
+                line += " partial"
+            lines.append(line)
     else:
         lines.append("- none")
     lines.append("")

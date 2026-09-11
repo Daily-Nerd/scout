@@ -5,16 +5,18 @@ import pytest
 from scout.config import Config, load
 from scout.github_search import TokenMissingError
 from scout.issues import (
+    REASON_HELD,
     STATUS_DRY_RUN,
     STATUS_FILED,
     STATUS_SKIPPED,
     file_candidates,
     render_body,
     render_title,
+    update_tier_label,
 )
 from scout.models import Candidate
 from scout.store import Store
-from scout.tiering import TierScore
+from scout.tiering import Component, TierScore
 
 DEFAULT_CONFIG = """
 [github]
@@ -50,6 +52,29 @@ def load_config(tmp_path) -> Config:
     return load(path)
 
 
+def load_config_with_cap(tmp_path, cap: int) -> Config:
+    path = tmp_path / "scout.toml"
+    path.write_text(
+        DEFAULT_CONFIG.format(db_path=tmp_path / "state" / "scout.db")
+        + f"\n[filing]\nmax_per_run = {cap}\n"
+    )
+    return load(path)
+
+
+def scored_candidate(repo: str) -> Candidate:
+    return Candidate(
+        repo=repo,
+        source="github",
+        source_url=f"https://github.com/{repo}",
+        matched_terms=["topic:agent-memory"],
+        description="agent memory",
+        stars=5,
+        pushed_at="2026-09-08T00:00:00Z",
+        license="MIT",
+        html_url=f"https://github.com/{repo}",
+    )
+
+
 def reddit_candidate() -> Candidate:
     return Candidate(
         repo="alice/memorymesh",
@@ -81,11 +106,18 @@ def github_candidate() -> Candidate:
     )
 
 
-def tier(repo: str, name: str, score: float, tier_name: str) -> TierScore:
+def tier(
+    repo: str,
+    name: str,
+    score: float,
+    tier_name: str,
+    absent: list[str] | None = None,
+) -> TierScore:
     return TierScore(
         repo=repo, score=score, tier=tier_name,
         label=f"scout:tier-{tier_name}",
-        components={"stars": score},
+        components={"stars": Component(input=name, value=score)},
+        absent=absent or [],
     )
 
 
@@ -205,7 +237,7 @@ def test_apply_files_with_tier_label_and_score_in_body(tmp_path):
     assert payload["title"] == "candidate: alice/memorymesh"
     assert payload["labels"] == ["scout:candidate", "scout:tier-a"]
     assert "Tier: A (score 9.00)" in payload["body"]
-    assert "Score components: stars 9.00" in payload["body"]
+    assert "Score components: stars=9.00" in payload["body"]
     assert session.label_posts == 2  # candidate label plus tier label
 
 
@@ -233,6 +265,71 @@ def test_tier_c_candidates_are_not_filed(tmp_path):
     assert session.posts == []
 
 
+def test_cap_limits_dry_run_to_top_scores_and_holds_the_rest(tmp_path):
+    candidates = [scored_candidate(f"org/repo{i:02d}") for i in range(30)]
+    tiers = {c.repo: tier(c.repo, c.repo, float(i), "a") for i, c in enumerate(candidates)}
+    with Store(tmp_path / "state.db") as store:
+        results = file_candidates(
+            load_config_with_cap(tmp_path, 25), store, candidates,
+            apply=False, token=None, session=FakeSession(),
+            tiers=tiers,
+        )
+    filed = {r.repo for r in results if r.status == STATUS_DRY_RUN}
+    held = {r.repo for r in results if r.status == STATUS_SKIPPED and r.reason == REASON_HELD}
+    assert len(filed) == 25
+    assert len(held) == 5
+    # scores 0..4 are the five lowest, so they are the ones held back
+    assert held == {f"org/repo{i:02d}" for i in range(5)}
+
+
+def test_cap_limits_apply_run_the_same_as_dry_run(tmp_path):
+    candidates = [scored_candidate(f"org/repo{i:02d}") for i in range(3)]
+    tiers = {c.repo: tier(c.repo, c.repo, float(i), "a") for i, c in enumerate(candidates)}
+    session = FakeSession()
+    with Store(tmp_path / "state.db") as store:
+        results = file_candidates(
+            load_config_with_cap(tmp_path, 2), store, candidates,
+            apply=True, token="t", session=session,
+            tiers=tiers,
+        )
+    filed = [r.repo for r in results if r.status == STATUS_FILED]
+    held = [r.repo for r in results if r.reason == REASON_HELD]
+    assert filed == ["org/repo01", "org/repo02"]
+    assert held == ["org/repo00"]
+    assert len(session.posts) == 2
+
+
+def test_cap_ties_are_broken_by_repo_name(tmp_path):
+    candidates = [
+        scored_candidate("zeta/repo"),
+        scored_candidate("alpha/repo"),
+        scored_candidate("mid/repo"),
+    ]
+    tiers = {c.repo: tier(c.repo, c.repo, 5.0, "a") for c in candidates}
+    with Store(tmp_path / "state.db") as store:
+        results = file_candidates(
+            load_config_with_cap(tmp_path, 2), store, candidates,
+            apply=False, token=None, session=FakeSession(),
+            tiers=tiers,
+        )
+    filed = {r.repo for r in results if r.status == STATUS_DRY_RUN}
+    held = {r.repo for r in results if r.reason == REASON_HELD}
+    assert filed == {"alpha/repo", "mid/repo"}
+    assert held == {"zeta/repo"}
+
+
+def test_cap_zero_files_nothing(tmp_path):
+    candidates = [scored_candidate(f"org/repo{i:02d}") for i in range(3)]
+    tiers = {c.repo: tier(c.repo, c.repo, float(i), "a") for i, c in enumerate(candidates)}
+    with Store(tmp_path / "state.db") as store:
+        results = file_candidates(
+            load_config_with_cap(tmp_path, 0), store, candidates,
+            apply=False, token=None, session=FakeSession(),
+            tiers=tiers,
+        )
+    assert all(r.status == STATUS_SKIPPED and r.reason == REASON_HELD for r in results)
+
+
 def test_existing_issue_map_is_trusted_without_a_second_walk(tmp_path):
     """Passing existing skips the target-repo walk entirely."""
     class ExplodingSession(FakeSession):
@@ -257,8 +354,24 @@ def test_render_body_with_tier_shows_components():
     candidate = reddit_candidate()
     body = render_body(candidate, tier("alice/memorymesh", "x", 7.25, "b"))
     assert "Tier: B (score 7.25)" in body
-    assert "Score components:" in body
+    assert "Score components: stars=7.25" in body
     assert "\u2014" not in body
+
+
+def test_render_body_shows_partial_marker_when_components_are_absent():
+    candidate = reddit_candidate()
+    partial_tier = tier(
+        "alice/memorymesh", "x", 3.0, "c", absent=["stars", "topics"]
+    )
+    body = render_body(candidate, partial_tier)
+    assert "Tier: C (score 3.00) (partial: stars, topics)" in body
+
+
+def test_render_body_omits_partial_marker_when_nothing_is_absent():
+    candidate = reddit_candidate()
+    body = render_body(candidate, tier("alice/memorymesh", "x", 9.0, "a"))
+    assert "Tier: A (score 9.00)" in body
+    assert "partial" not in body
 
 
 def test_apply_files_and_marks_store(tmp_path):
@@ -321,3 +434,58 @@ def test_apply_without_token_fails_clearly(tmp_path):
         with pytest.raises(TokenMissingError, match="SCOUT_GITHUB_TOKEN"):
             file_candidates(load_config(tmp_path), store, [reddit_candidate()],
                             apply=True, token=None, session=FakeSession())
+
+
+class FakeLabelSession:
+    """One issue's labels -> canned GET; PATCH recorded."""
+
+    def __init__(self, labels):
+        self.labels = [{"name": name} for name in labels]
+        self.gets: list[str] = []
+        self.patches: list[tuple[str, dict]] = []
+
+    def get(self, url, params=None, headers=None, timeout=None):
+        self.gets.append(url)
+        return FakeResponse(payload={"labels": self.labels})
+
+    def patch(self, url, headers=None, json=None, timeout=None):
+        self.patches.append((url, json))
+        return FakeResponse(payload={})
+
+
+def test_update_tier_label_patches_labels_in_apply_mode(tmp_path):
+    session = FakeLabelSession(["scout:candidate", "scout:tier-b"])
+    update_tier_label(
+        load_config(tmp_path), session, "t", 42,
+        "scout:tier-b", "scout:tier-a", apply=True, sleep=lambda s: None,
+    )
+    assert session.gets == [
+        "https://api.github.com/repos/Daily-Nerd/scout/issues/42"
+    ]
+    assert len(session.patches) == 1
+    url, payload = session.patches[0]
+    assert url == "https://api.github.com/repos/Daily-Nerd/scout/issues/42"
+    assert payload["labels"] == ["scout:candidate", "scout:tier-a"]
+
+
+def test_update_tier_label_leaves_other_labels_untouched(tmp_path):
+    session = FakeLabelSession(["scout:candidate", "scout:tier-c", "bug"])
+    update_tier_label(
+        load_config(tmp_path), session, "t", 42,
+        "scout:tier-c", "scout:tier-b", apply=True, sleep=lambda s: None,
+    )
+    _, payload = session.patches[0]
+    assert payload["labels"] == ["scout:candidate", "bug", "scout:tier-b"]
+
+
+def test_update_tier_label_dry_run_does_not_write(tmp_path, capsys):
+    session = FakeLabelSession(["scout:candidate", "scout:tier-b"])
+    update_tier_label(
+        load_config(tmp_path), session, "t", 42,
+        "scout:tier-b", "scout:tier-a", apply=False, sleep=lambda s: None,
+    )
+    assert session.gets == []
+    assert session.patches == []
+    out = capsys.readouterr().out
+    assert "scout:tier-b" in out and "scout:tier-a" in out
+    assert "\u2014" not in out

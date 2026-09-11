@@ -4,6 +4,7 @@ import pytest
 
 from scout.config import Config, load
 from scout.github_search import TokenMissingError
+from scout.history import History
 from scout.retract import (
     EXPLAINER_BODY,
     EXPLAINER_TITLE,
@@ -182,3 +183,73 @@ def test_apply_without_token_fails_clearly(tmp_path):
     with pytest.raises(TokenMissingError, match="SCOUT_GITHUB_TOKEN"):
         retract(load_config(tmp_path), apply=True, token=None,
                 session=FakeSession())
+
+
+def test_explainer_clarifies_retraction_is_not_an_atlas_verdict():
+    normalized = " ".join(EXPLAINER_BODY.split())
+    assert (
+        "A retracted issue means scout withdrew its own filing. It does "
+        "not mean the atlas looked at the project or rejected it."
+    ) in normalized
+    assert "\u2014" not in EXPLAINER_BODY
+
+
+def test_apply_marks_repo_retracted_in_store_from_title(tmp_path):
+    from scout.store import Store
+
+    history_path = tmp_path / "data" / "candidates.jsonl"
+    store = Store(tmp_path / "state.db", history_path)
+    session = FakeSession(issues=[open_candidate(7)], label_exists=True)
+    result = retract(
+        load_config(tmp_path), apply=True, token="t", session=session,
+        sleep=lambda s: None, store=store,
+    )
+    store.close()
+
+    assert result.closed == 1
+    restored = History(history_path)
+    assert restored.repos["owner/repo7"]["discovery"] == "retracted"
+
+
+def test_apply_marks_repo_retracted_via_history_fallback_when_title_lacks_repo(
+    tmp_path,
+):
+    from scout.store import Store
+
+    history_path = tmp_path / "data" / "candidates.jsonl"
+    store = Store(tmp_path / "state.db", history_path)
+    store.history.mark_issue("owner/legacy", 7)
+
+    session = FakeSession(
+        issues=[{
+            "number": 7,
+            "title": "an issue with no candidate prefix",
+            "labels": [{"name": "scout:candidate"}],
+        }],
+        label_exists=True,
+    )
+    result = retract(
+        load_config(tmp_path), apply=True, token="t", session=session,
+        sleep=lambda s: None, store=store,
+    )
+    store.close()
+
+    assert result.closed == 1
+    restored = History(history_path)
+    assert restored.repos["owner/legacy"]["discovery"] == "retracted"
+
+
+def test_dry_run_never_marks_the_store(tmp_path):
+    from scout.store import Store
+
+    history_path = tmp_path / "data" / "candidates.jsonl"
+    store = Store(tmp_path / "state.db", history_path)
+    session = FakeSession(issues=[open_candidate(7)])
+    retract(
+        load_config(tmp_path), apply=False, token=None, session=session,
+        store=store,
+    )
+    store.close()
+
+    restored = History(history_path)
+    assert restored.repos == {}
