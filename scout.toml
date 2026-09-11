@@ -1,12 +1,14 @@
 # scout configuration. Everything the pipeline needs lives here, not in code.
 
 [github]
-# Queries run against the GitHub search API, filtered to recent repos.
+# Queries run against the GitHub search API, filtered to repos pushed
+# inside the window. The phrase query must stay quoted: unquoted, GitHub
+# ANDs the words anywhere in the name or description.
 queries = [
     "topic:agent-memory",
     "topic:ai-memory",
     "topic:memory-mcp",
-    "agent memory in:name,description",
+    "\"agent memory\" in:name,description",
 ]
 window_days = 14
 
@@ -37,8 +39,9 @@ archive_org = "agent-memory-atlas-archive"
 # org adopts scout.
 target_repo = "Daily-Nerd/scout"
 label = "scout:candidate"
-# Avoid GitHub secondary limits when filing a large candidate batch.
-request_interval_seconds = 1
+# Stay inside the GitHub content-creation ceiling (near 500 writes an hour)
+# and away from secondary limits.
+request_interval_seconds = 2
 max_rate_limit_retries = 3
 
 [state]

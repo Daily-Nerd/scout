@@ -1,9 +1,10 @@
 """GitHub repository search source.
 
 Queries the search API with the configured query list, filtered to repos
-created and pushed inside the configured window. Forks and archived repos
-are excluded, and every repo returned is persisted in the local store so a
-rerun only surfaces new repos.
+pushed inside the configured window. Forks and archived repos are excluded,
+every hit must pass the same agent-ish plus memory-ish term gate the Reddit
+source runs, profile repos and scout itself are excluded, and every repo
+returned is persisted in the local store so a rerun only surfaces new repos.
 """
 
 from __future__ import annotations
@@ -37,13 +38,24 @@ def _headers(token: str) -> dict[str, str]:
     }
 
 
-def _to_candidate(item: dict, query: str) -> Candidate | None:
+def _to_candidate(
+    config: Config, item: dict, query: str
+) -> Candidate | None:
     if item.get("fork") or item.get("archived"):
         return None
     html_url = item.get("html_url", "")
     try:
         repo = normalize_repo(item.get("full_name") or html_url)
     except ValueError:
+        return None
+    owner, _, name = repo.partition("/")
+    if name == owner:  # owner/repo profile README
+        return None
+    if repo == normalize_repo(config.issues.target_repo):
+        return None
+    topics = " ".join(item.get("topics") or [])
+    matched = config.terms.gate(f"{name} {item.get('description') or ''} {topics}")
+    if matched is None:
         return None
     license_info = item.get("license") or {}
     return Candidate(
@@ -84,7 +96,7 @@ def search(
         session = requests.Session()
 
     cutoff = datetime.now(UTC).date() - timedelta(days=config.github.window_days)
-    window = f" created:>{cutoff.isoformat()} pushed:>{cutoff.isoformat()}"
+    window = f" pushed:>{cutoff.isoformat()}"
     headers = _headers(token)
 
     candidates: list[Candidate] = []
@@ -111,7 +123,7 @@ def search(
 
             unseen_on_page = 0
             for item in items:
-                candidate = _to_candidate(item, query)
+                candidate = _to_candidate(config, item, query)
                 if candidate is None or store.is_repo_seen(candidate.repo):
                     continue
                 store.mark_repo_seen(candidate.repo, "github")

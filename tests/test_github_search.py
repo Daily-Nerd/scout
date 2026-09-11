@@ -61,7 +61,7 @@ class FakeSession:
 
     def get(self, url, params=None, headers=None, timeout=None):
         assert url == github_search.SEARCH_URL
-        q = params["q"].split(" created:>")[0]
+        q = params["q"].split(" pushed:>")[0]
         self.calls.append(
             {"query": q, "page": params["page"], "params": dict(params),
              "headers": dict(headers or {})}
@@ -121,15 +121,17 @@ def test_appends_window_and_uses_token_header(tmp_path):
                session=session, sleep=lambda s: None)
     assert session.calls[0]["headers"]["Authorization"] == "Bearer sekret"
     q = session.calls[0]["params"]["q"]
-    assert " created:>20" in q and " pushed:>20" in q
+    assert " created:>" not in q and " pushed:>20" in q
     assert session.calls[0]["params"]["per_page"] == 100
 
 
 def test_paginates_and_pauses_between_pages(tmp_path):
     page1 = {"items": [{"full_name": f"o/r{i}", "html_url": f"https://github.com/o/r{i}",
+                        "description": "agent memory store",
                         "fork": False, "archived": False}
                        for i in range(100)]}
     page2 = {"items": [{"full_name": "o/new", "html_url": "https://github.com/o/new",
+                        "description": "agent memory store",
                         "fork": False, "archived": False}]}
     session = FakeSession({("topic:agent-memory", 1): page1,
                            ("topic:agent-memory", 2): page2,
@@ -146,6 +148,7 @@ def test_paginates_and_pauses_between_pages(tmp_path):
 
 def test_stops_paginating_when_page_is_all_seen(tmp_path):
     seen_page = {"items": [{"full_name": "o/old", "html_url": "https://github.com/o/old",
+                            "description": "agent memory store",
                             "fork": False, "archived": False}]}
     session = FakeSession({("topic:agent-memory", 1): seen_page,
                            ("agent memory in:name,description", 1): {"items": []}})
@@ -172,3 +175,57 @@ def test_rerun_returns_only_new_repos(tmp_path):
     assert second == []
     # the API is still queried once per query, the store filters the rest
     assert len(session.calls) == 2
+
+
+def _item(full_name, description="agent memory store", topics=None):
+    return {
+        "full_name": full_name,
+        "html_url": f"https://github.com/{full_name}",
+        "description": description,
+        "topics": topics or [],
+        "stargazers_count": 5,
+        "pushed_at": "2026-09-08T10:24:00Z",
+        "fork": False,
+        "archived": False,
+    }
+
+
+def test_term_gate_drops_hits_without_both_term_families(tmp_path):
+    page = {"items": [
+        _item("o/good", "memory store for agents"),
+        _item("o/travel", "a travel agent booking site"),
+        _item("o/plain", "a memory database"),
+    ]}
+    session = FakeSession({("topic:agent-memory", 1): page,
+                           ("agent memory in:name,description", 1): {"items": []}})
+    with Store(tmp_path / "state.db") as store:
+        candidates = search(load_config(tmp_path), store, token="t",
+                            session=session, sleep=lambda s: None)
+    assert [c.repo for c in candidates] == ["o/good"]
+
+
+def test_term_gate_reads_name_description_and_topics(tmp_path):
+    page = {"items": [_item("o/topicgate", description=None,
+                            topics=["agents", "memory"])]}
+    session = FakeSession({("topic:agent-memory", 1): page,
+                           ("agent memory in:name,description", 1): {"items": []}})
+    with Store(tmp_path / "state.db") as store:
+        candidates = search(load_config(tmp_path), store, token="t",
+                            session=session, sleep=lambda s: None)
+    assert [c.repo for c in candidates] == ["o/topicgate"]
+
+
+def test_excludes_profile_repos_and_scout_itself(tmp_path):
+    page = {"items": [
+        _item("alice/alice"),  # owner equals repo: profile README
+        _item("Daily-Nerd/scout"),
+        _item("o/real"),
+    ]}
+    session = FakeSession({("topic:agent-memory", 1): page,
+                           ("agent memory in:name,description", 1): {"items": []}})
+    with Store(tmp_path / "state.db") as store:
+        candidates = search(load_config(tmp_path), store, token="t",
+                            session=session, sleep=lambda s: None)
+        assert [c.repo for c in candidates] == ["o/real"]
+        assert not store.is_repo_seen("alice/alice")
+        assert not store.is_repo_seen("daily-nerd/scout")

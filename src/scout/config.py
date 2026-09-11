@@ -36,6 +36,16 @@ class TermConfig:
         }
         return sorted(found)
 
+    def gate(self, text: str) -> list[str] | None:
+        """Terms matched in text, or None unless at least one agent-ish and
+        one memory-ish term both appear (case-insensitive)."""
+        lowered = text.lower()
+        agentish = [t for t in self.agentish if t.lower() in lowered]
+        memoryish = [t for t in self.memoryish if t.lower() in lowered]
+        if not agentish or not memoryish:
+            return None
+        return sorted(agentish + memoryish)
+
 
 @dataclass
 class AtlasConfig:
@@ -48,7 +58,7 @@ class AtlasConfig:
 class IssuesConfig:
     target_repo: str = "Daily-Nerd/scout"
     label: str = "scout:candidate"
-    request_interval_seconds: float = 1.0
+    request_interval_seconds: float = 2.0
     max_rate_limit_retries: int = 3
 
 
@@ -114,7 +124,7 @@ def load(path: str | Path) -> Config:
         issues=IssuesConfig(
             target_repo=str(issues.get("target_repo", "Daily-Nerd/scout")),
             label=str(issues.get("label", "scout:candidate")),
-            request_interval_seconds=float(issues.get("request_interval_seconds", 1)),
+            request_interval_seconds=float(issues.get("request_interval_seconds", 2)),
             max_rate_limit_retries=int(issues.get("max_rate_limit_retries", 3)),
         ),
         state=StateConfig(

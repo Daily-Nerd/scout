@@ -123,12 +123,7 @@ def extract_repo_urls(text: str) -> list[str]:
 def matching_terms(config: Config, text: str) -> list[str] | None:
     """Terms matched in text, or None unless at least one agent-ish and one
     memory-ish term both appear (case-insensitive)."""
-    lowered = text.lower()
-    agentish = [t for t in config.terms.agentish if t.lower() in lowered]
-    memoryish = [t for t in config.terms.memoryish if t.lower() in lowered]
-    if not agentish or not memoryish:
-        return None
-    return sorted(agentish + memoryish)
+    return config.terms.gate(text)
 
 
 def _entry_candidates(
