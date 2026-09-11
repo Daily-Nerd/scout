@@ -565,6 +565,8 @@ def test_500_on_readme_leaves_readme_absent_but_row_still_rescored(tmp_path):
         row = store.history.repos["alice/recall-hub"]
         assert "readme" in row["absent_components"]
         assert store.readme_size("alice/recall-hub") is None
+        # the error is not cached as an answer: the next run fetches again
+        assert not store.has_readme_size("alice/recall-hub")
         assert row["refresh_attempted_at"] == NOW_ISO
         assert "refresh_error" not in row
     finally:

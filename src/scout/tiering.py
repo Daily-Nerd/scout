@@ -265,13 +265,13 @@ def _readme_size_from_payload(payload: dict) -> int | None:
 def _fetch_readme_size(
     session: requests.Session, repo: str, headers: dict[str, str], *, sleep=time.sleep
 ) -> int | None:
-    """README byte size for one repo, or None when there is no README or
-    the fetch itself failed.
+    """README byte size for one repo, or None when the fetch itself failed.
 
-    A 404 is a known, scorable no-README state. Any other non-2xx status
-    or a malformed payload leaves the size unknown rather than raising,
-    the same way _fetch_tree_signals treats an unexpected response: a
-    single repo's transient error must not abort a whole batch.
+    A 404 is a known, scorable no-README state: 0 bytes. Any other
+    non-2xx status or a malformed payload leaves the size unknown (None)
+    rather than raising, the same way _fetch_tree_signals treats an
+    unexpected response: a single repo's transient error must not abort
+    a whole batch, and must not be cached as an answer either.
     """
     response = request_with_backoff(
         lambda: session.get(
@@ -281,7 +281,7 @@ def _fetch_readme_size(
         sleep=sleep,
     )
     if response.status_code == 404:
-        return None
+        return 0
     try:
         response.raise_for_status()
         payload = response.json()
@@ -302,8 +302,10 @@ def collect_readme_sizes(
     """README sizes for the given candidates, reusing the history cache.
 
     Repos whose history row already carries a readme_bytes value are not
-    fetched again; repos without one are fetched once and the size is
-    written back into the history row so later runs skip them too.
+    fetched again; repos without one are fetched and, when the fetch
+    produced a size (including 0 for a 404), it is written back into the
+    history row so later runs skip them too. A failed fetch caches
+    nothing, so the repo is retried on the next run.
     """
     if session is None:
         session = requests.Session()
@@ -319,7 +321,8 @@ def collect_readme_sizes(
     for candidate in pending:
         size = _fetch_readme_size(session, candidate.repo, headers, sleep=sleep)
         sizes[candidate.repo] = size
-        store.save_readme_size(candidate.repo, size)
+        if size is not None:
+            store.save_readme_size(candidate.repo, size)
     return sizes
 
 

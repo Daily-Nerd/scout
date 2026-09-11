@@ -154,7 +154,8 @@ def refresh(
             has_tests, source_files = None, None
 
         readme_bytes = _fetch_readme_size(session, repo, headers, sleep=sleep)
-        store.save_readme_size(repo, readme_bytes)
+        if readme_bytes is not None:
+            store.save_readme_size(repo, readme_bytes)
 
         candidate = _candidate_from_latest(row["latest"])
         old_tier = row.get("tier")

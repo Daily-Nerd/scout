@@ -473,9 +473,11 @@ class FakeResponse:
 
 
 class FakeSession:
-    """readme -> canned base64 payload or 404, everything else fails."""
+    """readme -> canned base64 payload of `size` bytes, a 404 when the
+    size is None, or a bare error status when given as an ("error", code)
+    tuple; everything else fails."""
 
-    def __init__(self, sizes: dict[str, int | None]):
+    def __init__(self, sizes: dict[str, object]):
         self.sizes = sizes
         self.readme_calls: list[str] = []
 
@@ -486,6 +488,8 @@ class FakeSession:
         size = self.sizes.get(repo)
         if size is None:
             return FakeResponse(status_code=404)
+        if isinstance(size, tuple):
+            return FakeResponse(status_code=size[1])
         content = base64.b64encode(b"x" * size).decode()
         return FakeResponse(payload={"content": content, "encoding": "base64"})
 
@@ -514,6 +518,45 @@ def test_fetch_readme_size_returns_none_on_a_non_404_error_status():
     assert result is None
 
 
+def test_fetch_readme_size_returns_zero_on_404():
+    """No README is a known size, not an unknown one."""
+    result = _fetch_readme_size(
+        FakeReadmeStatusSession(404), "alice/memorymesh", {}, sleep=lambda s: None,
+    )
+    assert result == 0
+
+
+def test_readme_error_is_not_cached_and_is_retried_next_run(tmp_path):
+    config, store = _store_with_history(
+        tmp_path, [make_candidate(), make_candidate(repo="bob/noreadme")]
+    )
+    try:
+        broken = FakeSession({
+            "alice/memorymesh": ("error", 500), "bob/noreadme": None,
+        })
+        sizes = collect_readme_sizes(
+            config, store, [make_candidate(), make_candidate(repo="bob/noreadme")],
+            token="t", session=broken,
+        )
+        assert sizes == {"alice/memorymesh": None, "bob/noreadme": 0}
+        # the 404 is cached as 0, the 500 leaves no cache entry at all
+        assert store.readme_size("bob/noreadme") == 0
+        assert store.has_readme_size("bob/noreadme")
+        assert not store.has_readme_size("alice/memorymesh")
+
+        healed = FakeSession({"alice/memorymesh": 5000, "bob/noreadme": None})
+        again = collect_readme_sizes(
+            config, store, [make_candidate(), make_candidate(repo="bob/noreadme")],
+            token="t", session=healed,
+        )
+        # only the uncached repo is fetched again
+        assert healed.readme_calls == ["alice/memorymesh"]
+        assert again == {"alice/memorymesh": 5000, "bob/noreadme": 0}
+        assert store.readme_size("alice/memorymesh") == 5000
+    finally:
+        store.close()
+
+
 def test_readme_sizes_fetch_decode_and_cache(tmp_path):
     config, store = _store_with_history(
         tmp_path, [make_candidate(), make_candidate(repo="bob/noreadme")]
@@ -524,9 +567,10 @@ def test_readme_sizes_fetch_decode_and_cache(tmp_path):
             config, store, [make_candidate(), make_candidate(repo="bob/noreadme")],
             token="t", session=session,
         )
-        assert sizes == {"alice/memorymesh": 5000, "bob/noreadme": None}
+        assert sizes == {"alice/memorymesh": 5000, "bob/noreadme": 0}
         assert session.readme_calls == ["alice/memorymesh", "bob/noreadme"]
         assert store.readme_size("alice/memorymesh") == 5000
+        assert store.readme_size("bob/noreadme") == 0
         assert store.has_readme_size("bob/noreadme")
 
         # a second run over the same repos makes no readme calls at all,
