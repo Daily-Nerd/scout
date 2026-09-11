@@ -86,10 +86,10 @@ def refresh(
     When the resulting tier differs from what was on file, that is
     recorded in `tier_changes` regardless of whether the row has a
     filed issue. Only when it does is `issues.update_tier_label` also
-    called to swap the issue's label; if that call itself fails (a bad
-    GET or PATCH), the failure is caught, recorded in `failed` with a
-    "label patch failed" error, and the pass continues to the next
-    row. Either way, every row visited gets exactly one
+    called to swap the issue's label; if that call fails with a
+    requests error (a bad GET or PATCH), the failure is caught, recorded
+    in `failed` with a "label patch failed" error, and the pass
+    continues to the next row. Either way, every row visited gets exactly one
     `mark_refresh_attempt` stamp with the same `now`, so a row that
     keeps failing still advances its freshness stamp instead of
     starving the queue forever.
@@ -177,13 +177,16 @@ def refresh(
         issue_number = row.get("issue_number")
         attempt_error: str | None = None
         if tier_changed and issue_number:
+            # The label lookups sit outside the try: a tier with no label
+            # is a programming error and must surface, only the HTTP
+            # round trip is tolerated per row.
+            old_label, new_label = TIER_LABELS[old_tier], TIER_LABELS[new_tier]
             try:
                 issues_mod.update_tier_label(
-                    config, session, token, issue_number,
-                    TIER_LABELS[old_tier], TIER_LABELS[new_tier],
+                    config, session, token, issue_number, old_label, new_label,
                     apply=apply, sleep=sleep,
                 )
-            except Exception:
+            except requests.RequestException:
                 attempt_error = "label patch failed"
                 outcome.failed.append(repo)
 

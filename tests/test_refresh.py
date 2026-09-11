@@ -3,6 +3,9 @@ from __future__ import annotations
 import base64
 from datetime import UTC, datetime
 
+import pytest
+import requests
+
 from scout.config import Config, load
 from scout.refresh import RefreshOutcome, refresh
 from scout.store import Store
@@ -89,7 +92,7 @@ class FakeResponse:
 
     def raise_for_status(self):
         if self.status_code >= 400:
-            raise RuntimeError(f"http {self.status_code}")
+            raise requests.HTTPError(f"http {self.status_code}")
 
 
 def _readme_payload(size: int) -> dict:
@@ -619,6 +622,39 @@ def test_failed_label_patch_does_not_stop_the_pass(tmp_path):
         # the rescore itself went through
         assert row["tier"] == "a"
         assert row["refresh_error"] == "label patch failed"
+    finally:
+        store.close()
+
+
+def test_unknown_old_tier_is_a_programming_error_not_a_label_failure(tmp_path):
+    """Only an HTTP failure on the label patch is tolerated per row; a
+    tier with no label is a bug and must surface, not land in `failed`."""
+    config = load_config(tmp_path)
+    store = Store(config.state.db_path, config.state.candidates_path)
+    store.history.repos["alice/recall-hub"] = _row(
+        repo="alice/recall-hub", tier="z", score=6.0, issue_number=42,
+        discovery="filed",
+    )
+    store.history.repos["alice/recall-hub"]["latest"]["repo"] = "alice/recall-hub"
+    try:
+        session = FakeSession(
+            repo_payloads={
+                "alice/recall-hub": {
+                    "stargazers_count": 500, "pushed_at": NOW_ISO,
+                    "description": "agent memory", "topics": ["memory"],
+                    "license": {"spdx_id": "MIT"},
+                    "html_url": "https://github.com/alice/recall-hub",
+                },
+            },
+            tree_payloads={"alice/recall-hub": _tree_payload(40, has_tests=True)},
+            readme_payloads={"alice/recall-hub": _readme_payload(20000)},
+            issue_labels={42: ["scout:candidate"]},
+        )
+        with pytest.raises(KeyError):
+            refresh(
+                config, store, token="t", session=session,
+                sleep=lambda s: None, now=NOW, apply=True,
+            )
     finally:
         store.close()
 
