@@ -14,6 +14,7 @@ import json
 import re
 import sys
 import tarfile
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -231,8 +232,15 @@ def load_atlas(
     token: str | None = None,
     session: requests.Session | None = None,
     fetch_tarball=None,
+    filed_repos: Iterable[str] | None = None,
 ) -> AtlasSet:
-    """Build the set of known repos, refreshing the cache at most once a run."""
+    """Build the set of known repos, refreshing the cache at most once a run.
+
+    When ``filed_repos`` is passed it is used as the scout issue check and
+    no target-repo issue walk is done here; cli fetches it once per run and
+    shares it with filing. Without it the walk runs as before when a token
+    is present.
+    """
     cached = _read_cache(config)
     if cached is not None:
         return cached
@@ -248,7 +256,10 @@ def load_atlas(
         reasons.setdefault(repo, REASON_ATLAS)
     for repo in _fetch_archive_org(session, config.atlas.archive_org, headers):
         reasons.setdefault(repo, REASON_ARCHIVE)
-    if token:
+    if filed_repos is not None:
+        for repo in filed_repos:
+            reasons.setdefault(repo, REASON_ISSUE)
+    elif token:
         for repo in _fetch_filed_repos(session, config, headers):
             reasons.setdefault(repo, REASON_ISSUE)
     else:
