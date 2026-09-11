@@ -62,14 +62,17 @@ jobs:
           if [ ! -f data/candidates.jsonl ]; then
             exit 0
           fi
-          content="$(base64 -w 0 data/candidates.jsonl)"
-          api_args=(
-            --method PUT
-            "repos/${GITHUB_REPOSITORY}/contents/data/candidates.jsonl"
-            --field message="chore: update scout candidate history"
-            --field content="$content"
-          )
+          sha=""
           if git cat-file -e HEAD:data/candidates.jsonl 2>/dev/null; then
-            api_args+=(--field sha="$(git rev-parse HEAD:data/candidates.jsonl)")
+            sha="$(git rev-parse HEAD:data/candidates.jsonl)"
           fi
-          gh api "${api_args[@]}"
+          jq -n \
+            --arg message "chore: update scout candidate history" \
+            --rawfile content data/candidates.jsonl \
+            --arg sha "$sha" \
+            '{message: $message, content: ($content | @base64)}
+             + (if $sha == "" then {} else {sha: $sha} end)' \
+            | gh api \
+                --method PUT \
+                "repos/${GITHUB_REPOSITORY}/contents/data/candidates.jsonl" \
+                --input -
