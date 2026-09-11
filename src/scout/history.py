@@ -324,14 +324,18 @@ class History:
             if row.get("kind") != "repo":
                 continue
             if "discovery" not in row:
+                # An issue number outranks the title_only flag: every row
+                # filed before the retraction was also rebuilt from its
+                # issue title, and the flag only says where the row came
+                # from, not what scout did with it.
                 issue_number = row.get("issue_number")
-                if row.get("title_only"):
-                    row["discovery"] = "title_only"
-                elif issue_number and retracted_through is not None \
+                if issue_number and retracted_through is not None \
                         and issue_number <= retracted_through:
                     row["discovery"] = "retracted"
                 elif issue_number:
                     row["discovery"] = "filed"
+                elif row.get("title_only"):
+                    row["discovery"] = "title_only"
                 else:
                     row["discovery"] = "seen"
                 counts["discovery"] += 1

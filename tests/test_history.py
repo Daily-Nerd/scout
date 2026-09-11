@@ -236,12 +236,37 @@ def test_repair_rows_backfills_missing_fields_without_touching_existing(tmp_path
     assert history.repos["owner/pending"]["discovery"] == "seen"
     assert history.repos["owner/retracted-candidate"]["discovery"] == "retracted"
     assert history.repos["owner/still-filed"]["discovery"] == "filed"
-    assert history.repos["owner/title-only"]["discovery"] == "title_only"
+    # title_only and issue_number 3 <= 100: the retraction wins, the flag
+    # only says the row was rebuilt from a title
+    assert history.repos["owner/title-only"]["discovery"] == "retracted"
     assert history.repos["owner/no-readme"]["latest"]["readme_bytes"] == 0
     assert history.repos["owner/pending"]["assessment"] == "none"
     assert history.repos["owner/already-tagged"]["discovery"] == "seen"
     assert history.repos["owner/already-tagged"]["assessment"] == "tier-b"
     assert counts == {"discovery": 5, "assessment": 5, "readme_bytes": 1}
+
+
+def test_repair_rows_prefers_retracted_over_title_only_flag(tmp_path):
+    """Every row filed before the retraction is also title_only (they were
+    rebuilt from issue titles), so the flag must not shadow the issue
+    number: retracted first, then filed, then title_only, then seen."""
+    path = tmp_path / "candidates.jsonl"
+    history = History(path)
+    history.repos["owner/retracted-title"] = {
+        "kind": "repo", "repo": "owner/retracted-title", "title_only": True,
+        "issue_number": 3,
+    }
+    history.repos["owner/filed-title"] = {
+        "kind": "repo", "repo": "owner/filed-title", "title_only": True,
+        "issue_number": 300,
+    }
+    history.repos["owner/bare-title"] = {
+        "kind": "repo", "repo": "owner/bare-title", "title_only": True,
+    }
+    history.repair_rows(retracted_through=100)
+    assert history.repos["owner/retracted-title"]["discovery"] == "retracted"
+    assert history.repos["owner/filed-title"]["discovery"] == "filed"
+    assert history.repos["owner/bare-title"]["discovery"] == "title_only"
 
 
 def test_repair_rows_without_retracted_through_leaves_issues_filed(tmp_path):
