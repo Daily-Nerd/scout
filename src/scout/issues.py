@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from dataclasses import dataclass
 
 import requests
@@ -16,6 +17,7 @@ import requests
 from .config import Config
 from .github_search import TOKEN_ENV, TokenMissingError
 from .models import Candidate, normalize_repo
+from .rate_limit import github_rate_limited, request_with_backoff
 from .store import Store
 
 API = "https://api.github.com"
@@ -77,18 +79,27 @@ def _headers(token: str | None) -> dict[str, str]:
 
 
 def _existing_issue_repos(
-    session: requests.Session, config: Config, headers: dict[str, str]
+    session: requests.Session,
+    config: Config,
+    headers: dict[str, str],
+    *,
+    sleep=time.sleep,
 ) -> dict[str, int]:
     """Repo -> issue number for every candidate issue in the target repo."""
     query = (
         f'repo:{config.issues.target_repo} '
         f'label:"{config.issues.label}" in:title "candidate:"'
     )
-    response = session.get(
-        f"{API}/search/issues",
-        params={"q": query, "per_page": 100},
-        headers=headers,
-        timeout=30,
+    response = request_with_backoff(
+        lambda: session.get(
+            f"{API}/search/issues",
+            params={"q": query, "per_page": 100},
+            headers=headers,
+            timeout=30,
+        ),
+        should_retry=github_rate_limited,
+        sleep=sleep,
+        max_retries=config.issues.max_rate_limit_retries,
     )
     response.raise_for_status()
     found: dict[str, int] = {}
@@ -103,21 +114,35 @@ def _existing_issue_repos(
 
 
 def _ensure_label(
-    session: requests.Session, config: Config, headers: dict[str, str]
+    session: requests.Session,
+    config: Config,
+    headers: dict[str, str],
+    *,
+    sleep=time.sleep,
 ) -> None:
     labels_url = f"{API}/repos/{config.issues.target_repo}/labels"
-    response = session.get(
-        f"{labels_url}/{config.issues.label}", headers=headers, timeout=30
+    response = request_with_backoff(
+        lambda: session.get(
+            f"{labels_url}/{config.issues.label}", headers=headers, timeout=30
+        ),
+        should_retry=github_rate_limited,
+        sleep=sleep,
+        max_retries=config.issues.max_rate_limit_retries,
     )
     if response.status_code == 200:
         return
     if response.status_code != 404:
         response.raise_for_status()
-    create = session.post(
-        labels_url,
-        headers=headers,
-        json={"name": config.issues.label, "color": LABEL_COLOR},
-        timeout=30,
+    create = request_with_backoff(
+        lambda: session.post(
+            labels_url,
+            headers=headers,
+            json={"name": config.issues.label, "color": LABEL_COLOR},
+            timeout=30,
+        ),
+        should_retry=github_rate_limited,
+        sleep=sleep,
+        max_retries=config.issues.max_rate_limit_retries,
     )
     create.raise_for_status()
 
@@ -130,6 +155,7 @@ def file_candidates(
     apply: bool,
     token: str | None,
     session: requests.Session | None = None,
+    sleep=time.sleep,
 ) -> list[FiledIssue]:
     """Decide and (with apply) create one issue per candidate.
 
@@ -147,11 +173,14 @@ def file_candidates(
 
     pending = [c for c in candidates if not store.is_filed(c.repo)]
     if pending:
-        for repo, number in _existing_issue_repos(session, config, headers).items():
+        for repo, number in _existing_issue_repos(
+            session, config, headers, sleep=sleep
+        ).items():
             store.mark_filed(repo, number)
 
     results: list[FiledIssue] = []
     label_ready = False
+    last_issue_at = 0.0
     for candidate in candidates:
         if store.is_filed(candidate.repo):
             results.append(
@@ -176,14 +205,29 @@ def file_candidates(
             )
             continue
         if not label_ready:
-            _ensure_label(session, config, headers)
+            _ensure_label(session, config, headers, sleep=sleep)
             label_ready = True
-        response = session.post(
-            f"{API}/repos/{config.issues.target_repo}/issues",
-            headers=headers,
-            json={"title": title, "body": body, "labels": [config.issues.label]},
-            timeout=30,
+        wait = config.issues.request_interval_seconds - (
+            time.monotonic() - last_issue_at
         )
+        if wait > 0:
+            sleep(wait)
+        response = request_with_backoff(
+            lambda: session.post(
+                f"{API}/repos/{config.issues.target_repo}/issues",
+                headers=headers,
+                json={
+                    "title": title,
+                    "body": body,
+                    "labels": [config.issues.label],
+                },
+                timeout=30,
+            ),
+            should_retry=github_rate_limited,
+            sleep=sleep,
+            max_retries=config.issues.max_rate_limit_retries,
+        )
+        last_issue_at = time.monotonic()
         response.raise_for_status()
         number = response.json()["number"]
         store.mark_filed(candidate.repo, number)

@@ -16,6 +16,7 @@ import requests
 
 from .config import Config
 from .models import Candidate, normalize_repo
+from .rate_limit import github_rate_limited, request_with_backoff
 from .store import Store
 
 SEARCH_URL = "https://api.github.com/search/repositories"
@@ -89,17 +90,21 @@ def search(
     candidates: list[Candidate] = []
     for query in config.github.queries:
         for page in range(1, 11):  # the search API caps results at 1000
-            response = session.get(
-                SEARCH_URL,
-                params={
-                    "q": query + window,
-                    "sort": "updated",
-                    "order": "desc",
-                    "per_page": PER_PAGE,
-                    "page": page,
-                },
-                headers=headers,
-                timeout=30,
+            response = request_with_backoff(
+                lambda: session.get(
+                    SEARCH_URL,
+                    params={
+                        "q": query + window,
+                        "sort": "updated",
+                        "order": "desc",
+                        "per_page": PER_PAGE,
+                        "page": page,
+                    },
+                    headers=headers,
+                    timeout=30,
+                ),
+                should_retry=github_rate_limited,
+                sleep=sleep,
             )
             response.raise_for_status()
             items = response.json().get("items", [])

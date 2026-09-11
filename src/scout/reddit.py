@@ -1,8 +1,8 @@
 """Reddit source over public RSS, anonymous by design.
 
 One request per subreddit per run, spaced by config.reddit.request_interval_seconds,
-with a descriptive User-Agent. On 429 or 403 the source backs off: it logs a
-line to stderr and returns whatever it has already collected, never retrying.
+with a descriptive User-Agent. On 429 or 403 the source retries a bounded number
+of times using Retry-After or exponential backoff, then returns what it collected.
 Seen post ids are persisted in the local store so a rerun only ingests new posts.
 """
 
@@ -19,6 +19,7 @@ import requests
 
 from .config import Config
 from .models import Candidate, normalize_repo
+from .rate_limit import request_with_backoff
 from .store import Store
 
 BACKOFF_STATUSES = {403, 429}
@@ -175,16 +176,19 @@ def scan(
         )
         if wait > 0:
             sleep(wait)
-        response = session.get(
-            f"https://www.reddit.com/r/{subreddit}/new.rss",
-            headers=headers,
-            timeout=30,
+        url = f"https://www.reddit.com/r/{subreddit}/new.rss"
+        response = request_with_backoff(
+            lambda: session.get(url, headers=headers, timeout=30),
+            should_retry=lambda response: response.status_code in BACKOFF_STATUSES,
+            sleep=sleep,
+            max_retries=config.reddit.max_rate_limit_retries,
+            base_delay=config.reddit.request_interval_seconds,
         )
         last_request_at = time.monotonic()
         if response.status_code in BACKOFF_STATUSES:
             print(
                 f"reddit: r/{subreddit} returned {response.status_code}, "
-                "backing off for the rest of this run",
+                "backing off for the rest of this run after retries",
                 file=sys.stderr,
             )
             return candidates

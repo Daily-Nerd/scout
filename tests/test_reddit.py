@@ -159,7 +159,8 @@ def test_backs_off_on_403_and_returns_what_was_collected(tmp_path, capsys):
         candidates = scan(load_config(tmp_path), store,
                           session=session, sleep=lambda s: None)
     assert len(candidates) == 2
-    assert len(session.calls) == 2
+    # The throttled subreddit is retried three times, then the source stops.
+    assert len(session.calls) == 5
     err = capsys.readouterr().err
     assert "403" in err and "backing off" in err
 

@@ -22,6 +22,7 @@ import requests
 
 from .config import Config
 from .models import normalize_repo
+from .rate_limit import github_rate_limited, request_with_backoff
 
 TARBALL_URL = "https://codeload.github.com/{repo}/tar.gz/refs/heads/{branch}"
 CACHE_MAX_AGE_SECONDS = 24 * 3600
@@ -124,11 +125,14 @@ def _fetch_archive_org(
     repos: set[str] = set()
     page = 1
     while True:
-        response = session.get(
-            f"https://api.github.com/orgs/{org}/repos",
-            params={"per_page": 100, "page": page},
-            headers=headers,
-            timeout=30,
+        response = request_with_backoff(
+            lambda: session.get(
+                f"https://api.github.com/orgs/{org}/repos",
+                params={"per_page": 100, "page": page},
+                headers=headers,
+                timeout=30,
+            ),
+            should_retry=github_rate_limited,
         )
         response.raise_for_status()
         items = response.json()
@@ -154,11 +158,14 @@ def _fetch_filed_repos(
         f'repo:{config.issues.target_repo} '
         f'label:"{config.issues.label}" in:title "candidate:"'
     )
-    response = session.get(
-        "https://api.github.com/search/issues",
-        params={"q": query, "per_page": 100},
-        headers=headers,
-        timeout=30,
+    response = request_with_backoff(
+        lambda: session.get(
+            "https://api.github.com/search/issues",
+            params={"q": query, "per_page": 100},
+            headers=headers,
+            timeout=30,
+        ),
+        should_retry=github_rate_limited,
     )
     response.raise_for_status()
     repos: set[str] = set()

@@ -17,6 +17,7 @@ class GitHubConfig:
 class RedditConfig:
     subreddits: list[str] = field(default_factory=list)
     request_interval_seconds: float = 2.0
+    max_rate_limit_retries: int = 3
     contact_url: str = ""
 
 
@@ -47,6 +48,8 @@ class AtlasConfig:
 class IssuesConfig:
     target_repo: str = "Daily-Nerd/scout"
     label: str = "scout:candidate"
+    request_interval_seconds: float = 1.0
+    max_rate_limit_retries: int = 3
 
 
 @dataclass
@@ -95,6 +98,7 @@ def load(path: str | Path) -> Config:
         reddit=RedditConfig(
             subreddits=list(reddit.get("subreddits", [])),
             request_interval_seconds=float(reddit.get("request_interval_seconds", 2)),
+            max_rate_limit_retries=int(reddit.get("max_rate_limit_retries", 3)),
             contact_url=str(reddit.get("contact_url", "")),
         ),
         terms=TermConfig(
@@ -109,6 +113,8 @@ def load(path: str | Path) -> Config:
         issues=IssuesConfig(
             target_repo=str(issues.get("target_repo", "Daily-Nerd/scout")),
             label=str(issues.get("label", "scout:candidate")),
+            request_interval_seconds=float(issues.get("request_interval_seconds", 1)),
+            max_rate_limit_retries=int(issues.get("max_rate_limit_retries", 3)),
         ),
         state=StateConfig(db_path=Path(state.get("db_path", "state/scout.db"))),
         path=path,
