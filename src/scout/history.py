@@ -182,6 +182,31 @@ class History:
         if isinstance(latest, dict):
             latest["readme_bytes"] = size
 
+    def tree_signals(self, repo: str) -> tuple[bool, int] | None:
+        """Cached (has_tests, source_files) from the latest payload, or None
+        if the git tree has not been fetched for this repo yet."""
+        row = self.repos.get(repo)
+        latest = row.get("latest") if row else None
+        if isinstance(latest, dict) and "tree_tests" in latest:
+            return bool(latest["tree_tests"]), int(latest.get("tree_source_files", 0))
+        return None
+
+    def has_tree_signals(self, repo: str) -> bool:
+        """True once the git tree was fetched, even for an empty repo."""
+        row = self.repos.get(repo)
+        latest = row.get("latest") if row else None
+        return isinstance(latest, dict) and "tree_tests" in latest
+
+    def update_tree_signals(
+        self, repo: str, has_tests: bool, source_files: int, fetched_at: str
+    ) -> None:
+        row = self.repos.get(repo)
+        latest = row.get("latest") if row else None
+        if isinstance(latest, dict):
+            latest["tree_tests"] = has_tests
+            latest["tree_source_files"] = source_files
+            latest["tree_fetched_at"] = fetched_at
+
     def mark_title_only_rows(self) -> int:
         """Flag repo rows that carry no candidate payload.
 

@@ -141,6 +141,20 @@ class Store:
         if self.history is not None:
             self.history.update_readme_size(repo, size)
 
+    def tree_signals(self, repo: str) -> tuple[bool, int] | None:
+        if self.history is None:
+            return None
+        return self.history.tree_signals(repo)
+
+    def has_tree_signals(self, repo: str) -> bool:
+        return self.history is not None and self.history.has_tree_signals(repo)
+
+    def save_tree_signals(
+        self, repo: str, has_tests: bool, source_files: int, fetched_at: str
+    ) -> None:
+        if self.history is not None:
+            self.history.update_tree_signals(repo, has_tests, source_files, fetched_at)
+
     @property
     def issues_migrated(self) -> bool:
         return self.history is not None and self.history.issues_migrated

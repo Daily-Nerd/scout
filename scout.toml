@@ -46,16 +46,26 @@ max_rate_limit_retries = 3
 
 [tiering]
 # Deterministic candidate scoring, arithmetic only. The score is the sum of
-# six components, each a weight times a 0..1-ish signal:
-#   stars     weight * min(stars, stars_cap) / stars_cap
-#   recency   weight * max(0, 1 - days_since_push / recency_window_days)
-#   name      weight if a memory-ish term appears in the repo name, else 0
-#   readme    weight * min(readme_bytes, readme_cap_bytes) / readme_cap_bytes
-#   topics    weight * distinct term-list hits across the repo topics
-#   density   weight * fraction of description words containing a term
-# Missing data never errors; it scores 0 for that component. That covers
-# Reddit-sourced candidates (no stars, no pushed_at, no topics) and repos
-# with no README, no description, or a pushed_at that fails to parse.
+# nine components, each a weight times a 0..1-ish signal:
+#   stars         weight * min(stars, stars_cap) / stars_cap
+#   recency       weight * max(0, 1 - days_since_push / recency_window_days)
+#   name          weight if a memory-ish term appears in the repo name, else 0
+#   readme        weight * min(readme_bytes, readme_cap_bytes) / readme_cap_bytes
+#   topics        weight * distinct term-list hits across the repo topics
+#   density       weight * fraction of description words containing a term
+#   tests         weight if the git tree has a tests directory or a
+#                 test-named file, else 0
+#   source        weight * min(source_files, source_cap) / source_cap, where
+#                 source_files counts top-two-level blobs matching
+#                 source_extensions
+#   list_penalty  -weight when a list_words entry appears as a whole word
+#                 (case-insensitive) in the repo name or description, else 0
+# A component whose underlying input was never fetched contributes nothing
+# to the total (it is absent, not zero). That covers Reddit-sourced
+# candidates (no stars, no pushed_at, no topics), repos with no README, no
+# description, or a pushed_at that fails to parse, and repos whose git tree
+# has not been fetched yet. list_penalty is always present since it needs
+# only the repo name and description, which every candidate carries.
 # Tiers: score >= tier_a_min files as scout:tier-a, >= tier_b_min as
 # scout:tier-b, anything lower is tier C and is not filed.
 stars_weight = 2.0
@@ -69,6 +79,16 @@ topic_weight = 1.0
 density_weight = 3.0
 tier_a_min = 8.0
 tier_b_min = 5.0
+tests_weight = 2.0
+source_weight = 1.5
+source_cap = 40
+source_extensions = [".py", ".ts", ".tsx", ".js", ".go", ".rs", ".java", ".kt", ".rb", ".cs", ".cpp", ".c", ".swift"]
+list_penalty_weight = 3.0
+list_words = ["awesome", "list", "curated", "collection", "resources", "roundup"]
+# Fetching a git tree is a per-repo API call, so a first pass over ~1900
+# rows at 2s each would take over an hour. This caps how many uncached
+# repos get a tree fetch in one run; the rest are picked up next run.
+tree_max_per_run = 300
 
 [state]
 db_path = "state/scout.db"

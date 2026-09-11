@@ -99,7 +99,11 @@ def wired(tmp_path, monkeypatch):
     def fake_readme_sizes(config, store, cands, *, token, session=None):
         return {}
 
-    def fake_score(config, candidate, *, readme_bytes=None, now=None):
+    def fake_tree_signals(config, store, cands, *, token, session=None, **kwargs):
+        return {}
+
+    def fake_score(config, candidate, *, readme_bytes=None,
+                    tree_tests=None, tree_source_files=None, now=None):
         return cli.tiering_mod.TierScore(
             repo=candidate.repo,
             score=9.0,
@@ -134,6 +138,7 @@ def wired(tmp_path, monkeypatch):
         cli.issues_mod, "fetch_existing_issue_repos", lambda *args, **kwargs: {}
     )
     monkeypatch.setattr(cli.tiering_mod, "collect_readme_sizes", fake_readme_sizes)
+    monkeypatch.setattr(cli.tiering_mod, "collect_tree_signals", fake_tree_signals)
     monkeypatch.setattr(cli.tiering_mod, "score_candidate", fake_score)
     monkeypatch.delenv("SCOUT_GITHUB_TOKEN", raising=False)
     return config_path, candidates, calls
@@ -338,6 +343,8 @@ def test_check_then_file_walks_target_issues_once_and_shares(tmp_path, monkeypat
     monkeypatch.setattr(cli.atlas_mod, "load_atlas", fake_load_atlas)
     monkeypatch.setattr(cli.issues_mod, "file_candidates", fake_file)
     monkeypatch.setattr(cli.tiering_mod, "collect_readme_sizes",
+                        lambda *args, **kwargs: {})
+    monkeypatch.setattr(cli.tiering_mod, "collect_tree_signals",
                         lambda *args, **kwargs: {})
     monkeypatch.setattr(
         cli.tiering_mod, "score_candidate",

@@ -15,12 +15,20 @@ from scout.tiering import (
     TIER_C,
     TIER_LABELS,
     Component,
+    _fetch_tree_signals,
     collect_readme_sizes,
+    collect_tree_signals,
     component_summary,
     score_candidate,
+    tree_signals_from_payload,
 )
 
 NOW = datetime(2026, 9, 11, tzinfo=UTC)
+
+SOURCE_EXTENSIONS = [
+    ".py", ".ts", ".tsx", ".js", ".go", ".rs", ".java", ".kt",
+    ".rb", ".cs", ".cpp", ".c", ".swift",
+]
 
 CONFIG = """
 [github]
@@ -57,6 +65,13 @@ topic_weight = 1.0
 density_weight = 3.0
 tier_a_min = 8.0
 tier_b_min = 5.0
+tests_weight = 2.0
+source_weight = 1.5
+source_cap = 40
+source_extensions = [".py", ".ts", ".tsx", ".js", ".go", ".rs", ".java", ".kt", ".rb", ".cs", ".cpp", ".c", ".swift"]
+list_penalty_weight = 3.0
+list_words = ["awesome", "list", "curated", "collection", "resources", "roundup"]
+tree_max_per_run = 300
 
 [state]
 db_path = "{db_path}"
@@ -105,7 +120,10 @@ def test_full_score_matches_hand_computation(tmp_path):
     assert score.components["readme"].value == 1.0
     assert score.components["topics"].value == 2.0
     assert score.components["density"].value == 1.5
-    assert score.absent == []
+    # tree data was not supplied, so both tree components are absent, and
+    # the repo name/description trigger no list penalty
+    assert score.absent == ["tests", "source"]
+    assert score.components["list_penalty"].value == 0.0
     assert score.score == sum(
         c.value for c in score.components.values() if c.value is not None
     )
@@ -123,7 +141,7 @@ def test_missing_values_are_absent_not_zero(tmp_path):
     assert score.components["density"].value is None
     # topics is present (source is still github, just no topics listed)
     assert score.components["topics"].value == 0.0
-    assert score.absent == ["stars", "recency", "readme", "density"]
+    assert score.absent == ["stars", "recency", "readme", "density", "tests", "source"]
     # only the name term survives, well below tier B
     assert score.score == 2.0
     assert score.tier == TIER_C
@@ -193,7 +211,9 @@ def test_topics_absent_for_non_github_source(tmp_path):
     assert score.components["stars"].value is None
     assert score.components["recency"].value is None
     assert score.components["topics"].value is None
-    assert score.absent == ["stars", "recency", "readme", "topics"]
+    assert score.absent == [
+        "stars", "recency", "readme", "topics", "tests", "source",
+    ]
     # name and density still contribute, so the candidate still gets a tier
     assert score.score == (
         score.components["name"].value + score.components["density"].value
@@ -224,6 +244,9 @@ def test_component_summary_shows_unknown_for_absent_components(tmp_path):
     assert "density=unknown" in summary
     assert "name=2.00" in summary
     assert "topics=0.00" in summary
+    assert "tests=unknown" in summary
+    assert "source=unknown" in summary
+    assert "list_penalty=0.00" in summary
 
 
 def test_scored_at_is_utc_iso_from_now(tmp_path):
@@ -283,6 +306,150 @@ def test_tier_threshold_boundaries(tmp_path):
     almost_a = score_candidate(config, below_a, readme_bytes=20000, now=NOW)
     assert almost_a.score == 7.0
     assert almost_a.tier == TIER_B
+
+
+def test_tests_component_present_only_when_tree_tests_known(tmp_path):
+    config = load_config(tmp_path)
+    present_true = score_candidate(config, make_candidate(), tree_tests=True, now=NOW)
+    assert present_true.components["tests"].value == 2.0
+    assert present_true.components["tests"].input is True
+    assert "tests" not in present_true.absent
+
+    present_false = score_candidate(config, make_candidate(), tree_tests=False, now=NOW)
+    assert present_false.components["tests"].value == 0.0
+    assert "tests" not in present_false.absent
+
+    unknown = score_candidate(config, make_candidate(), now=NOW)
+    assert unknown.components["tests"].value is None
+    assert "tests" in unknown.absent
+
+
+def test_source_component_scales_and_caps(tmp_path):
+    config = load_config(tmp_path)
+    partial = score_candidate(
+        config, make_candidate(), tree_source_files=20, now=NOW
+    )
+    assert partial.components["source"].value == 1.5 * 20 / 40
+    assert partial.components["source"].input == 20
+    assert "source" not in partial.absent
+
+    capped = score_candidate(
+        config, make_candidate(), tree_source_files=1000, now=NOW
+    )
+    assert capped.components["source"].value == 1.5
+
+    unknown = score_candidate(config, make_candidate(), now=NOW)
+    assert unknown.components["source"].value is None
+    assert "source" in unknown.absent
+
+
+def test_list_penalty_applies_for_whole_word_in_repo_name(tmp_path):
+    config = load_config(tmp_path)
+    score = score_candidate(
+        config, make_candidate(repo="alice/awesome-agent-memory"), now=NOW
+    )
+    assert score.components["list_penalty"].value == -3.0
+    assert score.components["list_penalty"].input is True
+    assert "list_penalty" not in score.absent  # always present
+
+
+def test_list_penalty_applies_for_whole_word_in_description(tmp_path):
+    config = load_config(tmp_path)
+    score = score_candidate(
+        config,
+        make_candidate(description="A curated list of agent memory tools"),
+        now=NOW,
+    )
+    assert score.components["list_penalty"].value == -3.0
+
+
+def test_list_penalty_does_not_match_substrings(tmp_path):
+    config = load_config(tmp_path)
+    listener = score_candidate(config, make_candidate(repo="alice/listener"), now=NOW)
+    assert listener.components["list_penalty"].value == 0.0
+
+    blacklist = score_candidate(
+        config,
+        make_candidate(description="a blacklist of banned tools"),
+        now=NOW,
+    )
+    assert blacklist.components["list_penalty"].value == 0.0
+
+
+def test_list_penalty_is_never_absent(tmp_path):
+    config = load_config(tmp_path)
+    score = score_candidate(config, make_candidate(), now=NOW)
+    assert "list_penalty" not in score.absent
+    assert score.components["list_penalty"].value == 0.0
+
+
+def test_tree_signals_detects_top_level_tests_directory():
+    payload = {
+        "tree": [
+            {"path": "tests", "type": "tree"},
+            {"path": "tests/test_app.py", "type": "blob"},
+            {"path": "main.py", "type": "blob"},
+        ],
+        "truncated": False,
+    }
+    has_tests, source_files = tree_signals_from_payload(payload, SOURCE_EXTENSIONS)
+    assert has_tests is True
+    # both main.py and tests/test_app.py sit at or above two segments
+    assert source_files == 2
+
+
+def test_tree_signals_detects_nested_tests_directory():
+    payload = {
+        "tree": [{"path": "src/tests/util.py", "type": "blob"}],
+        "truncated": False,
+    }
+    has_tests, _ = tree_signals_from_payload(payload, SOURCE_EXTENSIONS)
+    assert has_tests is True
+
+
+@pytest.mark.parametrize("basename", [
+    "test_app.py", "app_test.py", "app.test.ts", "app.spec.ts", "app_test.go",
+])
+def test_tree_signals_detects_test_basename_patterns(basename):
+    payload = {
+        "tree": [{"path": f"pkg/{basename}", "type": "blob"}],
+        "truncated": False,
+    }
+    has_tests, _ = tree_signals_from_payload(payload, SOURCE_EXTENSIONS)
+    assert has_tests is True
+
+
+def test_tree_signals_top_two_levels_only_count_as_source():
+    payload = {
+        "tree": [
+            {"path": "main.py", "type": "blob"},
+            {"path": "src/app.py", "type": "blob"},
+            {"path": "src/a/b/c.py", "type": "blob"},
+            {"path": "README.md", "type": "blob"},
+        ],
+        "truncated": False,
+    }
+    has_tests, source_files = tree_signals_from_payload(payload, SOURCE_EXTENSIONS)
+    assert has_tests is False
+    # README.md has no matching extension, src/a/b/c.py is three segments deep
+    assert source_files == 2
+
+
+def test_tree_signals_counts_can_exceed_source_cap():
+    payload = {
+        "tree": [{"path": f"file{i}.py", "type": "blob"} for i in range(45)],
+        "truncated": False,
+    }
+    has_tests, source_files = tree_signals_from_payload(payload, SOURCE_EXTENSIONS)
+    assert has_tests is False
+    assert source_files == 45  # raw count; capping happens in score_candidate
+
+
+def test_tree_signals_absent_when_nothing_matches():
+    payload = {"tree": [{"path": "README.md", "type": "blob"}], "truncated": False}
+    has_tests, source_files = tree_signals_from_payload(payload, SOURCE_EXTENSIONS)
+    assert has_tests is False
+    assert source_files == 0
 
 
 class FakeResponse:
@@ -368,3 +535,122 @@ def test_readme_cache_survives_a_fresh_store(tmp_path):
         assert fresh.readme_size("alice/memorymesh") == 1234
     finally:
         fresh.close()
+
+
+class FakeTreeSession:
+    """git tree endpoint -> canned payload, or a 404/409/500 status."""
+
+    def __init__(self, outcomes: dict[str, object]):
+        self.outcomes = outcomes
+        self.calls: list[str] = []
+
+    def get(self, url, headers=None, timeout=None):
+        assert url.endswith("/git/trees/HEAD?recursive=1")
+        repo = url.split("/repos/")[1].split("/git/trees/HEAD")[0]
+        self.calls.append(repo)
+        outcome = self.outcomes.get(repo, "404")
+        if outcome in ("404", "409", "500"):
+            return FakeResponse(status_code=int(outcome))
+        return FakeResponse(payload=outcome, status_code=200)
+
+
+def test_fetch_tree_signals_handles_200_404_409_and_500():
+    headers = {}
+    session = FakeTreeSession({
+        "alice/withtests": {
+            "tree": [{"path": "tests", "type": "tree"}], "truncated": False,
+        },
+        "alice/empty404": "404",
+        "alice/empty409": "409",
+        "alice/broken500": "500",
+    })
+    assert _fetch_tree_signals(
+        session, "alice/withtests", headers,
+        extensions=SOURCE_EXTENSIONS, sleep=lambda s: None,
+    ) == (True, 0)
+    assert _fetch_tree_signals(
+        session, "alice/empty404", headers,
+        extensions=SOURCE_EXTENSIONS, sleep=lambda s: None,
+    ) == (False, 0)
+    assert _fetch_tree_signals(
+        session, "alice/empty409", headers,
+        extensions=SOURCE_EXTENSIONS, sleep=lambda s: None,
+    ) == (False, 0)
+    assert _fetch_tree_signals(
+        session, "alice/broken500", headers,
+        extensions=SOURCE_EXTENSIONS, sleep=lambda s: None,
+    ) is None
+
+
+def test_collect_tree_signals_fetches_caches_and_skips_on_rerun(tmp_path):
+    config, store = _store_with_history(tmp_path, [make_candidate()])
+    session = FakeTreeSession({
+        "alice/memorymesh": {
+            "tree": [{"path": "main.py", "type": "blob"}], "truncated": False,
+        },
+    })
+    try:
+        result = collect_tree_signals(
+            config, store, [make_candidate()], token="t", session=session,
+            sleep=lambda s: None, now=NOW,
+        )
+        assert result == {"alice/memorymesh": (False, 1)}
+        assert store.has_tree_signals("alice/memorymesh")
+        assert store.tree_signals("alice/memorymesh") == (False, 1)
+
+        again = collect_tree_signals(
+            config, store, [make_candidate()], token="t", session=session,
+            sleep=lambda s: None, now=NOW,
+        )
+        assert again == result
+        assert session.calls == ["alice/memorymesh"]  # no second fetch
+    finally:
+        store.close()
+
+
+def test_collect_tree_signals_respects_max_per_run_ordered_by_score(tmp_path):
+    config = load_config(tmp_path)
+    config.tiering.tree_max_per_run = 1
+    low = make_candidate(
+        repo="alice/low", stars=0, pushed_at=None, topics=[], description=""
+    )
+    high = make_candidate(
+        repo="alice/recall-hub", stars=500, pushed_at="2026-09-10T00:00:00Z",
+        topics=["memory"], description="agent memory",
+    )
+    store = Store(config.state.db_path, config.state.candidates_path)
+    store.record_candidates([low, high])
+    session = FakeTreeSession({
+        "alice/low": {"tree": [], "truncated": False},
+        "alice/recall-hub": {"tree": [], "truncated": False},
+    })
+    try:
+        result = collect_tree_signals(
+            config, store, [low, high], token="t", session=session,
+            sleep=lambda s: None, now=NOW,
+        )
+        # the stronger preliminary score is fetched first, and the cap
+        # holds the weaker candidate back for a later run
+        assert session.calls == ["alice/recall-hub"]
+        assert "alice/recall-hub" in result
+        assert "alice/low" not in result
+    finally:
+        store.close()
+
+
+def test_collect_tree_signals_sleeps_two_seconds_between_fetches(tmp_path):
+    candidates = [make_candidate(), make_candidate(repo="bob/other")]
+    config, store = _store_with_history(tmp_path, candidates)
+    session = FakeTreeSession({
+        "alice/memorymesh": {"tree": [], "truncated": False},
+        "bob/other": {"tree": [], "truncated": False},
+    })
+    sleeps: list[float] = []
+    try:
+        collect_tree_signals(
+            config, store, candidates, token="t", session=session,
+            sleep=sleeps.append, now=NOW,
+        )
+        assert sleeps == [2, 2]
+    finally:
+        store.close()

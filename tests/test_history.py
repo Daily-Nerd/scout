@@ -101,6 +101,23 @@ def test_readme_size_round_trips_through_history(tmp_path):
     assert not restored.has_readme_size("never/seen")
 
 
+def test_tree_signals_round_trip_through_history(tmp_path):
+    path = tmp_path / "candidates.jsonl"
+    history = History(path)
+    history.record_candidates([candidate(), candidate("owner/notested")])
+    history.update_tree_signals("alice/memorymesh", True, 12, "2026-09-11T00:00:00Z")
+    history.update_tree_signals("owner/notested", False, 0, "2026-09-11T00:00:00Z")
+    history.write()
+
+    restored = History(path)
+    assert restored.tree_signals("alice/memorymesh") == (True, 12)
+    assert restored.has_tree_signals("alice/memorymesh")
+    assert restored.tree_signals("owner/notested") == (False, 0)
+    assert restored.has_tree_signals("owner/notested")
+    assert not restored.has_tree_signals("never/seen")
+    assert restored.tree_signals("never/seen") is None
+
+
 def tier_score(repo: str = "alice/memorymesh") -> TierScore:
     return TierScore(
         repo=repo,

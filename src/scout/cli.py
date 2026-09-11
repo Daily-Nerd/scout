@@ -173,12 +173,19 @@ def _check_then_file(
     readme_sizes = tiering_mod.collect_readme_sizes(
         config, store, kept, token=token, session=session
     )
-    scores = {
-        candidate.repo: tiering_mod.score_candidate(
-            config, candidate, readme_bytes=readme_sizes.get(candidate.repo)
+    tree_signals = tiering_mod.collect_tree_signals(
+        config, store, kept, token=token, session=session
+    )
+    scores = {}
+    for candidate in kept:
+        signals = tree_signals.get(candidate.repo)
+        tree_tests, tree_source_files = signals if signals else (None, None)
+        scores[candidate.repo] = tiering_mod.score_candidate(
+            config, candidate,
+            readme_bytes=readme_sizes.get(candidate.repo),
+            tree_tests=tree_tests,
+            tree_source_files=tree_source_files,
         )
-        for candidate in kept
-    }
     for repo, score in scores.items():
         store.record_score(repo, score)
     for repos in known_reasons.values():
