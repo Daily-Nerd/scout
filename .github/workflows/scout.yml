@@ -26,11 +26,6 @@ jobs:
       # True once the scout-notary app secrets are set on the repository.
       HAS_APP_KEY: ${{ secrets.SCOUT_APP_PRIVATE_KEY != '' }}
     steps:
-      # Pin third-party actions to the exact revisions used by the verified run.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
-
       - name: Mint scout-notary token
         if: env.HAS_APP_KEY == 'true'
         id: app-token
@@ -38,6 +33,13 @@ jobs:
         with:
           app-id: ${{ vars.SCOUT_APP_ID }}
           private-key: ${{ secrets.SCOUT_APP_PRIVATE_KEY }}
+
+      # Pin third-party actions to the exact revisions used by the verified run.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ steps.app-token.outputs.token || github.token }}
+
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
 
       - name: Run scout
         # Prefer the scout-notary installation token once configured. Until
