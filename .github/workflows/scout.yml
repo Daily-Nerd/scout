@@ -56,15 +56,20 @@ jobs:
 
       - name: Persist scout history
         if: always()
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
         run: |
           if [ ! -f data/candidates.jsonl ]; then
             exit 0
           fi
-          git add data/candidates.jsonl
-          if git diff --cached --quiet -- data/candidates.jsonl; then
-            exit 0
+          content="$(base64 -w 0 data/candidates.jsonl)"
+          api_args=(
+            --method PUT
+            "repos/${GITHUB_REPOSITORY}/contents/data/candidates.jsonl"
+            --field message="chore: update scout candidate history"
+            --field content="$content"
+          )
+          if git cat-file -e HEAD:data/candidates.jsonl 2>/dev/null; then
+            api_args+=(--field sha="$(git rev-parse HEAD:data/candidates.jsonl)")
           fi
-          git config user.name "scout-notary[bot]"
-          git config user.email "4904018+scout-notary[bot]@users.noreply.github.com"
-          git commit -m "chore: update scout candidate history"
-          git push origin HEAD:main
+          gh api "${api_args[@]}"
