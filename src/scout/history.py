@@ -113,10 +113,20 @@ class History:
         )
 
     def record_candidates(self, candidates: list[Candidate]) -> None:
+        """Store each candidate as its row's latest payload.
+
+        A GitHub search hit carries the repo's real metadata (stars,
+        pushed_at, topics), so it counts as a metadata fetch and stamps
+        `latest.fetched_at` with the same moment as `last_seen_at`. A
+        Reddit hit only knows what the post said, so it leaves the stamp
+        off and the row stays due for a refresh.
+        """
         for candidate in candidates:
             self.mark_repo_seen(candidate.repo, candidate.source)
             row = self.repos[candidate.repo]
             row["latest"] = asdict(candidate)
+            if candidate.source == "github":
+                row["latest"]["fetched_at"] = row["last_seen_at"]
             source_urls = row.setdefault("source_urls", [])
             if candidate.source_url and candidate.source_url not in source_urls:
                 source_urls.append(candidate.source_url)
@@ -215,26 +225,40 @@ class History:
             latest["tree_fetched_at"] = fetched_at
 
     @staticmethod
-    def _refresh_freshness_stamp(row: dict) -> str:
-        """The later of scored_at and refresh_attempted_at, or "" if
-        neither is set. Both are written in the same zero-padded
-        "%Y-%m-%dT%H:%M:%SZ" shape, so the plain string max is also the
-        chronological max. A failed attempt (404, upstream error, or a
+    def _refresh_freshness(row: dict) -> datetime | None:
+        """The later of latest.fetched_at and refresh_attempted_at as a
+        datetime, or None if neither is set or parseable.
+
+        scored_at is deliberately not part of this: scoring runs every
+        run from the cached payload, so it says nothing about how old
+        the metadata is. A failed attempt (404, upstream error, or a
         label patch that did not go through) still counts: it must not
-        make a dead row sort first forever."""
-        return max(row.get("scored_at") or "", row.get("refresh_attempted_at") or "")
+        make a dead row sort first forever. The two stamps are written
+        in different ISO shapes (isoformat with an offset, and
+        "%Y-%m-%dT%H:%M:%SZ"), so they are parsed rather than compared
+        as strings."""
+        latest = row.get("latest")
+        fetched_at = latest.get("fetched_at") if isinstance(latest, dict) else None
+        parsed = [
+            _parse_iso(stamp)
+            for stamp in (fetched_at, row.get("refresh_attempted_at"))
+            if isinstance(stamp, str) and stamp
+        ]
+        known = [stamp for stamp in parsed if stamp is not None]
+        return max(known) if known else None
 
     def rows_due_for_refresh(self, now: datetime, days: int, limit: int) -> list[str]:
         """Repo rows overdue for a metadata refresh, oldest first.
 
         A row is due when its discovery is seen, filed or title_only, its
-        assessment is not atlas-known, and its freshness stamp (the later
-        of scored_at and refresh_attempted_at) is absent or older than
-        `days`. An unparseable stamp counts as due, same as an absent
-        one. Results are ordered by that stamp then last_seen_at, both
-        ascending (a missing value sorts first), and capped at `limit`.
+        assessment is not atlas-known, and its freshness (the later of
+        latest.fetched_at and refresh_attempted_at) is absent or older
+        than `days`. An unparseable stamp counts as absent. Results are
+        ordered by that freshness then last_seen_at, both ascending (a
+        missing value sorts first), and capped at `limit`.
         """
         cutoff = now - timedelta(days=days)
+        never = datetime.min.replace(tzinfo=UTC)
         due: list[str] = []
         for repo, row in self.repos.items():
             if row.get("kind") != "repo":
@@ -243,14 +267,12 @@ class History:
                 continue
             if row.get("assessment") == "atlas-known":
                 continue
-            stamp = self._refresh_freshness_stamp(row)
-            if stamp:
-                parsed = _parse_iso(stamp)
-                if parsed is not None and parsed >= cutoff:
-                    continue
+            freshness = self._refresh_freshness(row)
+            if freshness is not None and freshness >= cutoff:
+                continue
             due.append(repo)
         due.sort(key=lambda repo: (
-            self._refresh_freshness_stamp(self.repos[repo]),
+            self._refresh_freshness(self.repos[repo]) or never,
             self.repos[repo].get("last_seen_at") or "",
         ))
         return due[:limit]
@@ -274,16 +296,22 @@ class History:
         else:
             row.pop("refresh_error", None)
 
-    def update_latest(self, repo: str, **payload: object) -> None:
-        """Merge fields into a row's latest payload, creating it first if
-        the row has none yet (a title_only row rebuilt from an issue
-        title, or one seen before latest was recorded)."""
+    def update_latest(
+        self, repo: str, *, fetched_at: str | None = None, **payload: object
+    ) -> None:
+        """Merge freshly fetched fields into a row's latest payload,
+        creating it first if the row has none yet (a title_only row
+        rebuilt from an issue title, or one seen before latest was
+        recorded). Always stamps `latest.fetched_at`, with `fetched_at`
+        when given (refresh passes its run stamp) and the current time
+        otherwise, so the row leaves the refresh queue."""
         row = self.repos.setdefault(repo, _new_row(repo))
         latest = row.get("latest")
         if not isinstance(latest, dict):
             latest = {"repo": repo}
             row["latest"] = latest
         latest.update(payload)
+        latest["fetched_at"] = fetched_at or _now()
 
     def mark_title_only_rows(self) -> int:
         """Flag repo rows that carry no candidate payload.

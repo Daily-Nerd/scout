@@ -148,7 +148,9 @@ class FakeSession:
         return FakeResponse(payload={}, status_code=self.patch_status)
 
 
-def _row(**overrides) -> dict:
+def _row(fetched_at: str | None = None, **overrides) -> dict:
+    """A seen github row; `fetched_at` stamps its latest payload so the
+    refresh selection treats it as fetched at that moment."""
     row = {
         "kind": "repo", "repo": "owner/repo",
         "discovery": "seen", "assessment": "none",
@@ -161,6 +163,8 @@ def _row(**overrides) -> dict:
             "html_url": "https://github.com/owner/repo",
         },
     }
+    if fetched_at is not None:
+        row["latest"]["fetched_at"] = fetched_at
     row.update(overrides)
     return row
 
@@ -173,12 +177,14 @@ def test_selection_order_and_cap(tmp_path):
     )
     store.history.repos["owner/never-scored"]["latest"]["repo"] = "owner/never-scored"
     store.history.repos["owner/oldest-score"] = _row(
-        repo="owner/oldest-score", scored_at="2026-08-01T00:00:00Z",
+        repo="owner/oldest-score", fetched_at="2026-08-01T00:00:00Z",
         last_seen_at="2026-08-01T00:00:00Z", tier="c",
     )
     store.history.repos["owner/oldest-score"]["latest"]["repo"] = "owner/oldest-score"
+    # scored today from a fresh fetch: inside the window, not due
     store.history.repos["owner/fresh-score"] = _row(
-        repo="owner/fresh-score", scored_at="2026-09-10T00:00:00Z",
+        repo="owner/fresh-score", fetched_at="2026-09-10T00:00:00Z",
+        scored_at="2026-09-10T00:00:00Z",
         last_seen_at="2026-09-10T00:00:00Z", tier="c",
     )
     store.history.repos["owner/fresh-score"]["latest"]["repo"] = "owner/fresh-score"
@@ -201,6 +207,34 @@ def test_selection_order_and_cap(tmp_path):
         # the cap of 2; fresh-score is excluded outright since it is inside
         # the refresh window
         assert outcome.refreshed == ["owner/never-scored", "owner/oldest-score"]
+    finally:
+        store.close()
+
+
+def test_row_rescored_this_run_from_a_stale_fetch_is_still_refreshed(tmp_path):
+    """_check_then_file rescores every pending row each run and bumps
+    scored_at; that must not hide a payload last fetched in August."""
+    config = load_config(tmp_path)
+    store = Store(config.state.db_path, config.state.candidates_path)
+    store.history.repos["owner/stale"] = _row(
+        repo="owner/stale", fetched_at="2026-08-01T00:00:00Z",
+        scored_at=NOW_ISO, last_seen_at="2026-08-01T00:00:00Z", tier="c",
+    )
+    store.history.repos["owner/stale"]["latest"]["repo"] = "owner/stale"
+    try:
+        session = FakeSession(
+            repo_payloads={
+                "owner/stale": {"stargazers_count": 0, "pushed_at": None,
+                                "description": "", "topics": [],
+                                "license": None, "html_url": "x"},
+            },
+        )
+        outcome = refresh(
+            config, store, token="t", session=session,
+            sleep=lambda s: None, now=NOW, apply=False,
+        )
+        assert outcome.refreshed == ["owner/stale"]
+        assert store.history.repos["owner/stale"]["latest"]["fetched_at"] == NOW_ISO
     finally:
         store.close()
 
@@ -242,6 +276,9 @@ def test_200_payload_updates_latest_and_rescores(tmp_path):
         assert row["latest"]["description"] == "agent memory"
         assert row["latest"]["topics"] == ["memory"]
         assert row["latest"]["license"] == "MIT"
+        # the fetch is stamped with the run's `now`, so the row leaves the
+        # refresh queue for the next `days`
+        assert row["latest"]["fetched_at"] == NOW_ISO
         # source is untouched by refresh
         assert row["latest"]["source"] == "github"
         assert row["tier"] == "a"
@@ -459,12 +496,12 @@ def test_500_on_get_repos_lands_in_failed_and_next_row_still_refreshes(tmp_path)
     config = load_config(tmp_path)
     store = Store(config.state.db_path, config.state.candidates_path)
     store.history.repos["owner/broken"] = _row(
-        repo="owner/broken", scored_at="2026-08-01T00:00:00Z",
+        repo="owner/broken", fetched_at="2026-08-01T00:00:00Z",
         last_seen_at="2026-08-01T00:00:00Z", tier="c", score=2.0,
     )
     store.history.repos["owner/broken"]["latest"]["repo"] = "owner/broken"
     store.history.repos["owner/fine"] = _row(
-        repo="owner/fine", scored_at="2026-08-02T00:00:00Z",
+        repo="owner/fine", fetched_at="2026-08-02T00:00:00Z",
         last_seen_at="2026-08-02T00:00:00Z", tier="c", score=2.0,
     )
     store.history.repos["owner/fine"]["latest"]["repo"] = "owner/fine"
@@ -488,6 +525,8 @@ def test_500_on_get_repos_lands_in_failed_and_next_row_still_refreshes(tmp_path)
         assert broken_row["score"] == 2.0
         assert broken_row["refresh_attempted_at"] == NOW_ISO
         assert broken_row["refresh_error"] == "500"
+        # nothing was fetched, so the metadata stamp does not move
+        assert broken_row["latest"]["fetched_at"] == "2026-08-01T00:00:00Z"
         fine_row = store.history.repos["owner/fine"]
         assert fine_row["refresh_attempted_at"] == NOW_ISO
         assert "refresh_error" not in fine_row

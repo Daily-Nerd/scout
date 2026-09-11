@@ -347,18 +347,18 @@ def test_rows_due_for_refresh_orders_oldest_first_and_caps(tmp_path):
     }
     history.repos["owner/oldest-score"] = {
         "kind": "repo", "repo": "owner/oldest-score", "discovery": "filed",
-        "assessment": "tier-b", "scored_at": "2026-08-01T00:00:00Z",
-        "last_seen_at": "2026-08-01T00:00:00Z",
+        "assessment": "tier-b", "last_seen_at": "2026-08-01T00:00:00Z",
+        "latest": {"repo": "owner/oldest-score", "fetched_at": "2026-08-01T00:00:00Z"},
     }
     history.repos["owner/mid-score"] = {
         "kind": "repo", "repo": "owner/mid-score", "discovery": "title_only",
-        "assessment": "none", "scored_at": "2026-08-20T00:00:00Z",
-        "last_seen_at": "2026-08-20T00:00:00Z",
+        "assessment": "none", "last_seen_at": "2026-08-20T00:00:00Z",
+        "latest": {"repo": "owner/mid-score", "fetched_at": "2026-08-20T00:00:00Z"},
     }
     history.repos["owner/fresh-score"] = {
         "kind": "repo", "repo": "owner/fresh-score", "discovery": "seen",
-        "assessment": "tier-a", "scored_at": "2026-09-10T00:00:00Z",
-        "last_seen_at": "2026-09-10T00:00:00Z",
+        "assessment": "tier-a", "last_seen_at": "2026-09-10T00:00:00Z",
+        "latest": {"repo": "owner/fresh-score", "fetched_at": "2026-09-10T00:00:00Z"},
     }
     history.repos["owner/known"] = {
         "kind": "repo", "repo": "owner/known", "discovery": "seen",
@@ -426,10 +426,10 @@ def test_mark_refresh_attempt_stamps_time_and_clears_error_on_success(tmp_path):
     assert "refresh_error" not in row
 
 
-def test_rows_due_for_refresh_uses_max_of_scored_at_and_refresh_attempted_at(tmp_path):
+def test_rows_due_for_refresh_uses_max_of_fetched_at_and_refresh_attempted_at(tmp_path):
     path = tmp_path / "candidates.jsonl"
     history = History(path)
-    # never scored, but a failed refresh attempt was stamped today: must
+    # never fetched, but a failed refresh attempt was stamped today: must
     # not be reselected until `days` pass again
     history.repos["owner/dead"] = {
         "kind": "repo", "repo": "owner/dead", "discovery": "seen",
@@ -440,7 +440,7 @@ def test_rows_due_for_refresh_uses_max_of_scored_at_and_refresh_attempted_at(tmp
     assert due == []
 
 
-def test_rows_due_for_refresh_sorts_by_refresh_attempted_at_when_scored_at_absent(tmp_path):
+def test_rows_due_for_refresh_sorts_by_refresh_attempted_at_when_fetched_at_absent(tmp_path):
     path = tmp_path / "candidates.jsonl"
     history = History(path)
     history.repos["owner/attempted-old"] = {
@@ -458,21 +458,75 @@ def test_rows_due_for_refresh_sorts_by_refresh_attempted_at_when_scored_at_absen
     assert due == ["owner/never-touched", "owner/attempted-old"]
 
 
-def test_rows_due_for_refresh_uses_the_later_of_scored_at_and_refresh_attempted_at(
+def test_rows_due_for_refresh_uses_the_later_of_fetched_at_and_refresh_attempted_at(
     tmp_path,
 ):
     path = tmp_path / "candidates.jsonl"
     history = History(path)
-    # scored long ago, but freshly attempted (e.g. a label-patch failure
-    # after a successful rescore): the later stamp wins and keeps it out
+    # fetched long ago, but freshly attempted (e.g. a 404 this run): the
+    # later stamp wins and keeps it out
     history.repos["owner/recently-attempted"] = {
         "kind": "repo", "repo": "owner/recently-attempted", "discovery": "filed",
-        "assessment": "tier-b", "scored_at": "2026-01-01T00:00:00Z",
-        "refresh_attempted_at": "2026-09-10T00:00:00Z",
+        "assessment": "tier-b", "refresh_attempted_at": "2026-09-10T00:00:00Z",
         "last_seen_at": "2026-01-01T00:00:00Z",
+        "latest": {"repo": "owner/recently-attempted",
+                   "fetched_at": "2026-01-01T00:00:00Z"},
     }
     due = history.rows_due_for_refresh(NOW, days=14, limit=50)
     assert due == []
+
+
+def test_rows_due_for_refresh_ignores_scored_at(tmp_path):
+    """Scoring runs every run from the cached payload, so scored_at says
+    nothing about how old the metadata is. A pending github row rescored
+    this run from a payload fetched in August is still due; a row the
+    search re-found this run (fetched_at = now) is not."""
+    path = tmp_path / "candidates.jsonl"
+    history = History(path)
+    history.repos["owner/rescored-stale"] = {
+        "kind": "repo", "repo": "owner/rescored-stale", "discovery": "seen",
+        "assessment": "tier-b", "scored_at": "2026-09-11T00:00:00Z",
+        "last_seen_at": "2026-08-01T00:00:00Z",
+        "latest": {"repo": "owner/rescored-stale", "source": "github",
+                   "fetched_at": "2026-08-01T00:00:00Z"},
+    }
+    history.record_candidates([candidate("owner/refound")])
+    assert history.repos["owner/refound"]["latest"]["fetched_at"] \
+        == history.repos["owner/refound"]["last_seen_at"]
+
+    due = history.rows_due_for_refresh(datetime.now(UTC), days=14, limit=50)
+    assert due == ["owner/rescored-stale"]
+
+
+def test_record_candidates_stamps_fetched_at_only_for_github_hits(tmp_path):
+    """A search hit carries real repo metadata; a Reddit hit carries only
+    what the post said, so it must not count as a metadata fetch."""
+    path = tmp_path / "candidates.jsonl"
+    history = History(path)
+    reddit = Candidate(
+        repo="bob/memorymesh", source="reddit",
+        source_url="https://www.reddit.com/r/AIMemory/comments/1/x/",
+    )
+    history.record_candidates([candidate(), reddit])
+    assert "fetched_at" in history.repos["alice/memorymesh"]["latest"]
+    assert "fetched_at" not in history.repos["bob/memorymesh"]["latest"]
+
+
+def test_update_latest_always_stamps_fetched_at(tmp_path):
+    path = tmp_path / "candidates.jsonl"
+    history = History(path)
+    history.record_candidates([candidate()])
+    history.update_latest(
+        "alice/memorymesh", stars=99, fetched_at="2026-09-11T00:00:00Z",
+    )
+    assert history.repos["alice/memorymesh"]["latest"]["fetched_at"] \
+        == "2026-09-11T00:00:00Z"
+
+    # without an explicit stamp, the call time is used
+    before = datetime.now(UTC)
+    history.update_latest("alice/memorymesh", stars=100)
+    stamped = history.repos["alice/memorymesh"]["latest"]["fetched_at"]
+    assert datetime.fromisoformat(stamped) >= before
 
 
 def test_update_latest_creates_latest_for_a_title_only_row(tmp_path):

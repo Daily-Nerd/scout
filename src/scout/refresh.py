@@ -3,9 +3,11 @@
 Rows discovered a while ago accumulate stale metadata: a Reddit hit never
 had stars or pushed_at to begin with, and a GitHub hit's stars, recency
 and topics only reflect the moment it was first seen. Each run, at most
-config.refresh.max_per_run rows whose score is absent or older than
-config.refresh.days get a fresh GET /repos/{repo}, a forced (cache
-bypassing) tree and README fetch, and a rescore. The tier a rescore
+config.refresh.max_per_run rows whose metadata was never fetched, or was
+last fetched (by search or by refresh) more than config.refresh.days ago,
+get a fresh GET /repos/{repo}, a forced (cache bypassing) tree and README
+fetch, and a rescore. Staleness is measured from that last fetch, never
+from scored_at: scoring runs every run from the cached payload. The tier a rescore
 lands on can differ from what is on file, and when the row is already
 filed, that issue's tier label is swapped to match.
 
@@ -70,7 +72,8 @@ def refresh(
     pass and never crashes the run that called refresh().
 
     Otherwise `latest` is updated with the fresh stars, pushed_at,
-    description, topics, license and html_url; the row's source is
+    description, topics, license and html_url, and stamped with this
+    run's `now` as `fetched_at`; the row's source is
     left untouched (a title_only row, which has no latest yet, has its
     source and source_url filled in instead, from the row's sources
     and the fetched html_url). The git tree and README are refetched
@@ -130,6 +133,7 @@ def refresh(
         license_info = payload.get("license") or {}
         store.update_latest(
             repo,
+            fetched_at=attempted_at,
             stars=payload.get("stargazers_count"),
             pushed_at=payload.get("pushed_at"),
             description=payload.get("description") or "",
