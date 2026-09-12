@@ -73,17 +73,17 @@ _DEFAULT_LIST_WORDS = [
 
 @dataclass
 class TieringConfig:
-    stars_weight: float = 2.0
+    stars_weight: float = 4.0
     stars_cap: int = 500
-    recency_weight: float = 4.0
+    recency_weight: float = 2.0
     recency_window_days: int = 90
     name_weight: float = 2.0
     readme_weight: float = 2.0
     readme_cap_bytes: int = 20000
     topic_weight: float = 1.0
     density_weight: float = 3.0
-    tier_a_min: float = 8.0
-    tier_b_min: float = 5.0
+    tier_a_min: float = 10.0
+    tier_b_min: float = 7.0
     tests_weight: float = 2.0
     source_weight: float = 1.5
     source_cap: int = 40
@@ -179,17 +179,17 @@ def load(path: str | Path) -> Config:
             max_rate_limit_retries=int(issues.get("max_rate_limit_retries", 3)),
         ),
         tiering=TieringConfig(
-            stars_weight=float(tiering.get("stars_weight", 2)),
+            stars_weight=float(tiering.get("stars_weight", 4)),
             stars_cap=int(tiering.get("stars_cap", 500)),
-            recency_weight=float(tiering.get("recency_weight", 4)),
+            recency_weight=float(tiering.get("recency_weight", 2)),
             recency_window_days=int(tiering.get("recency_window_days", 90)),
             name_weight=float(tiering.get("name_weight", 2)),
             readme_weight=float(tiering.get("readme_weight", 2)),
             readme_cap_bytes=int(tiering.get("readme_cap_bytes", 20000)),
             topic_weight=float(tiering.get("topic_weight", 1)),
             density_weight=float(tiering.get("density_weight", 3)),
-            tier_a_min=float(tiering.get("tier_a_min", 8)),
-            tier_b_min=float(tiering.get("tier_b_min", 5)),
+            tier_a_min=float(tiering.get("tier_a_min", 10)),
+            tier_b_min=float(tiering.get("tier_b_min", 7)),
             tests_weight=float(tiering.get("tests_weight", 2)),
             source_weight=float(tiering.get("source_weight", 1.5)),
             source_cap=int(tiering.get("source_cap", 40)),

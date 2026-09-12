@@ -22,8 +22,8 @@ def test_repo_config_loads():
     assert config.state.candidates_path == Path("data/candidates.jsonl")
     assert config.state.reports_path == Path("reports")
     assert config.tiering.stars_cap == 500
-    assert config.tiering.tier_a_min == 8.0
-    assert config.tiering.tier_b_min == 5.0
+    assert config.tiering.tier_a_min == 10.0
+    assert config.tiering.tier_b_min == 7.0
     assert config.tiering.tests_weight == 2.0
     assert config.tiering.source_weight == 1.5
     assert config.tiering.source_cap == 40
@@ -51,7 +51,7 @@ def test_missing_table_uses_defaults(tmp_path):
     assert config.github.queries == ["topic:x"]
     assert config.reddit.subreddits == []
     assert config.atlas.archive_org == "agent-memory-atlas-archive"
-    assert config.tiering.tier_a_min == 8.0
+    assert config.tiering.tier_a_min == 10.0
     assert config.state.reports_path == Path("reports")
     assert config.tiering.tests_weight == 2.0
     assert config.tiering.source_weight == 1.5
