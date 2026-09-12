@@ -68,17 +68,21 @@ max_rate_limit_retries = 3
 # only the repo name and description, which every candidate carries.
 # Tiers: score >= tier_a_min files as scout:tier-a, >= tier_b_min as
 # scout:tier-b, anything lower is tier C and is not filed.
-stars_weight = 2.0
+# Tuned 2026-09-12 on 1861 seen rows: with recency at 4.0 and tier_b_min
+# at 5.0, a 0-star repo pushed this week with a memory-ish name reached
+# tier A on name, readme and topics alone. Recency is nearly constant
+# inside the 14 day search window, so it is a flat offset, not a signal.
+stars_weight = 4.0
 stars_cap = 500
-recency_weight = 4.0
+recency_weight = 2.0
 recency_window_days = 90
 name_weight = 2.0
 readme_weight = 2.0
 readme_cap_bytes = 20000
 topic_weight = 1.0
 density_weight = 3.0
-tier_a_min = 8.0
-tier_b_min = 5.0
+tier_a_min = 10.0
+tier_b_min = 7.0
 tests_weight = 2.0
 source_weight = 1.5
 source_cap = 40
